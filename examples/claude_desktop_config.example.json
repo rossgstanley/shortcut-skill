@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "shortcut-custom": {
+      "command": "python3",
+      "args": [
+        "/absolute/path/to/shortcut-skill/shortcut-task-manager/scripts/shortcut_mcp_server.py"
+      ],
+      "cwd": "/absolute/path/to/shortcut-skill/shortcut-task-manager",
+      "env": {
+        "SHORTCUT_API_TOKEN": "paste-your-token-here",
+        "SHORTCUT_API_BASE_URL": "https://api.app.shortcut.com/api/v3"
+      }
+    }
+  }
+}

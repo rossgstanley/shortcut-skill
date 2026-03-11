@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shortcut Task Manager"
+  short_description: "Manage Shortcut epics, stories and workflows"
+  default_prompt: "Use $shortcut-task-manager to search, create, and update Shortcut stories and Epics."

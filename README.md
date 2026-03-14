@@ -23,6 +23,14 @@ The skill supports common Shortcut workflows such as:
 - setting custom fields
 - resolving team/group IDs for writes
 
+For enum custom fields such as `Priority`, the safe path is to set them by field name and value name through the helper, which resolves Shortcut's required `value_id` shape automatically.
+
+Common workspace quirks this skill handles:
+- owner IDs may be UUID strings rather than integers
+- owner names are often safer than raw owner IDs
+- member mention names may be nested under `profile.mention_name`
+- enum custom fields require `value_id`
+
 ## Repository Layout
 
 ```text
@@ -39,6 +47,22 @@ shortcut-task-manager/
 ```
 
 Optional local recipe or migration files should live outside the generic skill surface. They do not need to be part of the public repository.
+
+## Architecture
+
+This repo has three layers:
+
+- CLI: [shortcut.py](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/scripts/shortcut.py) contains the core Shortcut API logic and can be run directly from the terminal.
+- Skill: [SKILL.md](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/SKILL.md) tells Codex how to use the CLI and what workflows to prefer.
+- MCP server: [shortcut_mcp_server.py](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/scripts/shortcut_mcp_server.py) exposes the same core operations to MCP-compatible clients over stdio.
+
+In practice:
+
+- use the CLI when you want direct scripted or terminal access
+- use the skill when you want to prompt Codex in natural language
+- use the MCP server when an MCP client such as Claude Desktop or Cursor needs to call the same operations as tools
+
+The CLI is the source of truth for behavior. The skill and MCP server are adapters around it.
 
 ## Install
 
@@ -89,6 +113,50 @@ Use $shortcut-task-manager to list Shortcut stories.
 Use $shortcut-task-manager to create a story in Backlog.
 Use $shortcut-task-manager to inspect custom fields in Shortcut.
 ```
+
+Useful CLI patterns:
+
+Assign a story to yourself:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py update-story \
+  --story-id 1234 \
+  --owner-self
+```
+
+Set a story priority safely:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py set-story-custom-field \
+  --story-id 1234 \
+  --field-name "Priority" \
+  --value-name "High"
+```
+
+Validate a story update without writing it:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py validate-story-update \
+  --story-id 1234 \
+  --owner-self \
+  --field-name "Priority" \
+  --value-name "High"
+```
+
+Bulk enrich stories from a plan:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py bulk-update-stories \
+  --query "label:needs-triage" \
+  --workflow-state-name "Backlog" \
+  --owner-self \
+  --field-name "Priority" \
+  --value-name "Medium" \
+  --story-type feature \
+  --dry-run
+```
+
+Then rerun with `--yes` to apply the batch.
 
 ## MCP
 

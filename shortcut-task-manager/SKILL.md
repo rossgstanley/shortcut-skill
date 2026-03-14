@@ -37,6 +37,7 @@ Keep this skill Shortcut-generic. Put spreadsheet-specific or domain-specific im
 - send only fields requested by the user
 - avoid inferred destructive operations
 - fail gracefully if a requested team/group cannot be created or found
+- for enum custom fields, prefer name-based helpers so the script resolves `value_id` correctly
 
 4. Report outcomes clearly:
 - include object IDs and URLs when available
@@ -54,8 +55,57 @@ python3 scripts/shortcut.py me
 
 # Search and inspect
 python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10
-python3 scripts/shortcut.py list-stories --limit 25
+python3 scripts/shortcut.py search-epics --query "platform hardening" --limit 10
+python3 scripts/shortcut.py list-stories --limit 25 --sort state
+python3 scripts/shortcut.py list-stories --epic-id 1234
+python3 scripts/shortcut.py list-epics --active --sort points
 python3 scripts/shortcut.py get-story --story-id 1234
+
+# Use raw JSON for scripting
+python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10 --json
+python3 scripts/shortcut.py search-epics --query "platform hardening" --limit 10 --json
+python3 scripts/shortcut.py list-epics --json
+
+# Set a custom field by names, without looking up UUIDs
+python3 scripts/shortcut.py set-story-custom-field \
+  --story-id 1234 \
+  --field-name "Priority" \
+  --value-name "High"
+
+# Create or update using names instead of IDs
+python3 scripts/shortcut.py create-story \
+  --name "Investigate retry policy" \
+  --workflow-state-name "Backlog" \
+  --group-name "Platform" \
+  --epic-name "Retry Hardening"
+
+python3 scripts/shortcut.py update-story \
+  --story-id 1234 \
+  --workflow-state-name "To Do" \
+  --field-name "Priority" \
+  --value-name "High"
+
+# Preview a bulk update before applying it
+python3 scripts/shortcut.py bulk-update-stories \
+  --query "label:backend" \
+  --workflow-state-name "To Do" \
+  --dry-run
+
+# Rank the next items to work on
+python3 scripts/shortcut.py next-stories --limit 10 --exclude-subtasks
+
+# Find stories that need refinement
+python3 scripts/shortcut.py refinement-list --limit 10
+
+# Owner IDs in some workspaces are UUID strings, so owner names are usually safer
+python3 scripts/shortcut.py update-story \
+  --story-id 1234 \
+  --owner-names "Jane Doe"
+
+# Assign a story to the authenticated Shortcut user
+python3 scripts/shortcut.py update-story \
+  --story-id 1234 \
+  --owner-self
 
 # Discover workspace metadata
 python3 scripts/shortcut.py list-projects
@@ -93,6 +143,16 @@ python3 scripts/shortcut.py create-epic --name "Retry Hardening"
 python3 scripts/shortcut.py update-epic --epic-id 1234 --description "Tighten backoff and rate-limit handling."
 python3 scripts/shortcut.py update-epic-labels --epic-id 1234 --labels '[{"name":"Platform"}]'
 ```
+
+Custom field note:
+- Enum custom fields in Shortcut expect `value_id`, not `value`.
+- The safest path is `set-story-custom-field --field-name ... --value-name ...` because the helper resolves the correct enum `value_id` automatically.
+
+Known workspace quirks:
+- owner IDs may be UUID strings rather than integers
+- owner names are usually safer than raw owner IDs
+- member mention names may live under `profile.mention_name`
+- enum custom fields require `value_id`
 
 ## Safety Rules
 

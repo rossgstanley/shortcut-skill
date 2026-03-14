@@ -32,6 +32,19 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "shortcut_search_epics",
+        "description": "Search Shortcut epics by free-text query.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "default": 10},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "shortcut_list_stories",
         "description": "List Shortcut stories, optionally filtered by workflow state.",
         "inputSchema": {
@@ -39,6 +52,9 @@ TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "default": 25},
                 "workflow_state_id": {"type": "integer"},
+                "epic_id": {"type": "integer"},
+                "active": {"type": "boolean"},
+                "sort": {"type": "string", "enum": ["name", "state", "estimate"]},
             },
             "additionalProperties": False,
         },
@@ -120,7 +136,14 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "name": "shortcut_list_epics",
         "description": "List Shortcut epics.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "active": {"type": "boolean"},
+                "sort": {"type": "string", "enum": ["name", "stories", "points"]},
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "shortcut_list_members",
@@ -170,14 +193,22 @@ TOOLS: List[Dict[str, Any]] = [
                 "name": {"type": "string"},
                 "project_id": {"type": "integer"},
                 "epic_id": {"type": "integer"},
+                "epic_name": {"type": "string"},
                 "group_id": {"type": "string"},
+                "group_name": {"type": "string"},
                 "parent_story_id": {"type": "integer"},
                 "source_task_id": {"type": "integer"},
                 "description": {"type": "string"},
                 "workflow_state_id": {"type": "integer"},
+                "workflow_state_name": {"type": "string"},
                 "estimate": {"type": "integer"},
                 "story_type": {"type": "string", "enum": ["feature", "bug", "chore"]},
-                "owner_ids": {"type": "array", "items": {"type": "integer"}},
+                "owner_self": {"type": "boolean"},
+                "owner_ids": {"type": "array", "items": {"type": "string"}},
+                "owner_names": {"type": "array", "items": {"type": "string"}},
+                "label_names": {"type": "array", "items": {"type": "string"}},
+                "field_name": {"type": "string"},
+                "value_name": {"type": "string"},
                 "labels": {"type": "array", "items": {"type": "object"}},
                 "custom_fields": {"type": "array", "items": {"type": "object"}},
             },
@@ -195,6 +226,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "description": {"type": "string"},
                 "project_ids": {"type": "array", "items": {"type": "integer"}},
                 "group_id": {"type": "string"},
+                "owner_self": {"type": "boolean"},
                 "owner_ids": {"type": "array", "items": {"type": "string"}},
                 "label_ids": {"type": "array", "items": {"type": "integer"}},
             },
@@ -213,6 +245,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "description": {"type": "string"},
                 "project_ids": {"type": "array", "items": {"type": "integer"}},
                 "group_id": {"type": "string"},
+                "owner_self": {"type": "boolean"},
                 "owner_ids": {"type": "array", "items": {"type": "string"}},
                 "labels": {"type": "array", "items": {"type": "object"}},
             },
@@ -243,12 +276,20 @@ TOOLS: List[Dict[str, Any]] = [
                 "name": {"type": "string"},
                 "description": {"type": "string"},
                 "workflow_state_id": {"type": "integer"},
+                "workflow_state_name": {"type": "string"},
                 "project_id": {"type": "integer"},
                 "epic_id": {"type": "integer"},
+                "epic_name": {"type": "string"},
                 "group_id": {"type": "string"},
+                "group_name": {"type": "string"},
                 "estimate": {"type": "integer"},
                 "story_type": {"type": "string", "enum": ["feature", "bug", "chore"]},
-                "owner_ids": {"type": "array", "items": {"type": "integer"}},
+                "owner_self": {"type": "boolean"},
+                "owner_ids": {"type": "array", "items": {"type": "string"}},
+                "owner_names": {"type": "array", "items": {"type": "string"}},
+                "label_names": {"type": "array", "items": {"type": "string"}},
+                "field_name": {"type": "string"},
+                "value_name": {"type": "string"},
                 "labels": {"type": "array", "items": {"type": "object"}},
                 "labels_add": {"type": "array", "items": {"type": "object"}},
                 "labels_remove": {"type": "array", "items": {"type": "object"}},
@@ -259,6 +300,41 @@ TOOLS: List[Dict[str, Any]] = [
             "required": ["story_id"],
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "shortcut_validate_story_update",
+        "description": "Validate and preview a Shortcut story update payload without writing it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "story_id": {"type": "integer"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "workflow_state_id": {"type": "integer"},
+                "workflow_state_name": {"type": "string"},
+                "project_id": {"type": "integer"},
+                "epic_id": {"type": "integer"},
+                "epic_name": {"type": "string"},
+                "group_id": {"type": "string"},
+                "group_name": {"type": "string"},
+                "estimate": {"type": "integer"},
+                "story_type": {"type": "string", "enum": ["feature", "bug", "chore"]},
+                "owner_self": {"type": "boolean"},
+                "owner_ids": {"type": "array", "items": {"type": "string"}},
+                "owner_names": {"type": "array", "items": {"type": "string"}},
+                "label_names": {"type": "array", "items": {"type": "string"}},
+                "field_name": {"type": "string"},
+                "value_name": {"type": "string"},
+                "labels": {"type": "array", "items": {"type": "object"}},
+                "labels_add": {"type": "array", "items": {"type": "object"}},
+                "labels_remove": {"type": "array", "items": {"type": "object"}},
+                "custom_fields": {"type": "array", "items": {"type": "object"}},
+                "custom_fields_add": {"type": "array", "items": {"type": "object"}},
+                "custom_fields_remove": {"type": "array", "items": {"type": "object"}}
+            },
+            "required": ["story_id"],
+            "additionalProperties": False
+        }
     },
     {
         "name": "shortcut_set_story_custom_fields",
@@ -272,6 +348,21 @@ TOOLS: List[Dict[str, Any]] = [
                 "custom_fields_remove": {"type": "array", "items": {"type": "object"}},
             },
             "required": ["story_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_set_story_custom_field",
+        "description": "Set one Shortcut story custom field by field name and value name.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "story_id": {"type": "integer"},
+                "field_name": {"type": "string"},
+                "value_name": {"type": "string"},
+                "dry_run": {"type": "boolean"}
+            },
+            "required": ["story_id", "field_name", "value_name"],
             "additionalProperties": False,
         },
     },
@@ -303,6 +394,61 @@ TOOLS: List[Dict[str, Any]] = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "shortcut_bulk_update_stories",
+        "description": "Bulk update Shortcut stories found by a search query, with dry-run preview support.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "default": 100},
+                "workflow_state_id": {"type": "integer"},
+                "workflow_state_name": {"type": "string"},
+                "group_id": {"type": "string"},
+                "group_name": {"type": "string"},
+                "epic_name": {"type": "string"},
+                "epic_id": {"type": "integer"},
+                "epic_name_target": {"type": "string"},
+                "owner_self": {"type": "boolean"},
+                "owner_ids": {"type": "array", "items": {"type": "string"}},
+                "owner_names": {"type": "array", "items": {"type": "string"}},
+                "label_names": {"type": "array", "items": {"type": "string"}},
+                "field_name": {"type": "string"},
+                "value_name": {"type": "string"},
+                "estimate": {"type": "integer"},
+                "story_type": {"type": "string", "enum": ["feature", "bug", "chore"]},
+                "dry_run": {"type": "boolean"},
+                "yes": {"type": "boolean"}
+            },
+            "required": ["query"],
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "shortcut_next_stories",
+        "description": "Rank the next Shortcut stories to work on, favoring higher priority, older stories, stories with descriptions, stories linked to epics, and stories whose epic already has completed work.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "default": 10},
+                "group_name": {"type": "string"},
+                "epic_name": {"type": "string"},
+                "exclude_subtasks": {"type": "boolean"}
+            },
+            "additionalProperties": False
+        }
+    },
+    {
+        "name": "shortcut_refinement_list",
+        "description": "Return the top stories that most need refinement, such as missing epic, description, priority, or owner.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "default": 10}
+            },
+            "additionalProperties": False
+        }
+    },
 ]
 
 
@@ -317,12 +463,17 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return shortcut.cmd_me(make_args())
     if name == "shortcut_search_stories":
         return shortcut.cmd_search_stories(make_args(query=args["query"], limit=args.get("limit", 10)))
+    if name == "shortcut_search_epics":
+        return shortcut.cmd_search_epics(make_args(query=args["query"], limit=args.get("limit", 10)))
     if name == "shortcut_list_stories":
         return shortcut.cmd_list_stories(
             make_args(
                 limit=args.get("limit", 25),
                 project_id=None,
                 workflow_state_id=args.get("workflow_state_id"),
+                epic_id=args.get("epic_id"),
+                active=args.get("active", False),
+                sort=args.get("sort"),
             )
         )
     if name == "shortcut_get_story":
@@ -360,7 +511,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if name == "shortcut_list_workflows":
         return shortcut.cmd_list_workflows(make_args())
     if name == "shortcut_list_epics":
-        return shortcut.cmd_list_epics(make_args())
+        return shortcut.cmd_list_epics(make_args(active=args.get("active", False), sort=args.get("sort")))
     if name == "shortcut_list_members":
         return shortcut.cmd_list_members(make_args())
     if name == "shortcut_list_labels":
@@ -383,14 +534,22 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 name=args["name"],
                 project_id=args.get("project_id"),
                 epic_id=args.get("epic_id"),
+                epic_name=args.get("epic_name"),
                 group_id=args.get("group_id"),
+                group_name=args.get("group_name"),
                 parent_story_id=args.get("parent_story_id"),
                 source_task_id=args.get("source_task_id"),
                 description=args.get("description"),
                 workflow_state_id=args.get("workflow_state_id"),
+                workflow_state_name=args.get("workflow_state_name"),
                 estimate=args.get("estimate"),
                 story_type=args.get("story_type"),
+                owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
+                owner_names=args.get("owner_names"),
+                label_names=args.get("label_names"),
+                field_name=args.get("field_name"),
+                value_name=args.get("value_name"),
                 labels=json.dumps(args["labels"]) if "labels" in args else None,
                 custom_fields=json.dumps(args["custom_fields"]) if "custom_fields" in args else None,
             )
@@ -402,6 +561,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 description=args.get("description"),
                 project_ids=args.get("project_ids"),
                 group_id=args.get("group_id"),
+                owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
                 label_ids=args.get("label_ids"),
             )
@@ -421,6 +581,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 description=args.get("description"),
                 project_ids=args.get("project_ids"),
                 group_id=args.get("group_id"),
+                owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
                 labels=json.dumps(args["labels"]) if "labels" in args else None,
             )
@@ -432,12 +593,49 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 name=args.get("name"),
                 description=args.get("description"),
                 workflow_state_id=args.get("workflow_state_id"),
+                workflow_state_name=args.get("workflow_state_name"),
                 project_id=args.get("project_id"),
                 epic_id=args.get("epic_id"),
+                epic_name=args.get("epic_name"),
                 group_id=args.get("group_id"),
+                group_name=args.get("group_name"),
                 estimate=args.get("estimate"),
                 story_type=args.get("story_type"),
+                owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
+                owner_names=args.get("owner_names"),
+                label_names=args.get("label_names"),
+                field_name=args.get("field_name"),
+                value_name=args.get("value_name"),
+                labels=json.dumps(args["labels"]) if "labels" in args else None,
+                labels_add=json.dumps(args["labels_add"]) if "labels_add" in args else None,
+                labels_remove=json.dumps(args["labels_remove"]) if "labels_remove" in args else None,
+                custom_fields=json.dumps(args["custom_fields"]) if "custom_fields" in args else None,
+                custom_fields_add=json.dumps(args["custom_fields_add"]) if "custom_fields_add" in args else None,
+                custom_fields_remove=json.dumps(args["custom_fields_remove"]) if "custom_fields_remove" in args else None,
+            )
+        )
+    if name == "shortcut_validate_story_update":
+        return shortcut.cmd_validate_story_update(
+            make_args(
+                story_id=args["story_id"],
+                name=args.get("name"),
+                description=args.get("description"),
+                workflow_state_id=args.get("workflow_state_id"),
+                workflow_state_name=args.get("workflow_state_name"),
+                project_id=args.get("project_id"),
+                epic_id=args.get("epic_id"),
+                epic_name=args.get("epic_name"),
+                group_id=args.get("group_id"),
+                group_name=args.get("group_name"),
+                estimate=args.get("estimate"),
+                story_type=args.get("story_type"),
+                owner_self=args.get("owner_self", False),
+                owner_ids=args.get("owner_ids"),
+                owner_names=args.get("owner_names"),
+                label_names=args.get("label_names"),
+                field_name=args.get("field_name"),
+                value_name=args.get("value_name"),
                 labels=json.dumps(args["labels"]) if "labels" in args else None,
                 labels_add=json.dumps(args["labels_add"]) if "labels_add" in args else None,
                 labels_remove=json.dumps(args["labels_remove"]) if "labels_remove" in args else None,
@@ -455,6 +653,15 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 custom_fields_remove=json.dumps(args["custom_fields_remove"]) if "custom_fields_remove" in args else None,
             )
         )
+    if name == "shortcut_set_story_custom_field":
+        return shortcut.cmd_set_story_custom_field(
+            make_args(
+                story_id=args["story_id"],
+                field_name=args["field_name"],
+                value_name=args["value_name"],
+                dry_run=args.get("dry_run", False),
+            )
+        )
     if name == "shortcut_update_story_labels":
         return shortcut.cmd_update_story_labels(
             make_args(
@@ -466,6 +673,41 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         )
     if name == "shortcut_comment_story":
         return shortcut.cmd_comment_story(make_args(story_id=args["story_id"], text=args["text"]))
+    if name == "shortcut_bulk_update_stories":
+        return shortcut.cmd_bulk_update_stories(
+            make_args(
+                query=args["query"],
+                limit=args.get("limit", 100),
+                workflow_state_id=args.get("workflow_state_id"),
+                workflow_state_name=args.get("workflow_state_name"),
+                group_id=args.get("group_id"),
+                group_name=args.get("group_name"),
+                epic_name=args.get("epic_name"),
+                epic_id=args.get("epic_id"),
+                epic_name_target=args.get("epic_name_target"),
+                owner_self=args.get("owner_self", False),
+                owner_ids=args.get("owner_ids"),
+                owner_names=args.get("owner_names"),
+                label_names=args.get("label_names"),
+                field_name=args.get("field_name"),
+                value_name=args.get("value_name"),
+                estimate=args.get("estimate"),
+                story_type=args.get("story_type"),
+                dry_run=args.get("dry_run", False),
+                yes=args.get("yes", False),
+            )
+        )
+    if name == "shortcut_next_stories":
+        return shortcut.cmd_next_stories(
+            make_args(
+                limit=args.get("limit", 10),
+                group_name=args.get("group_name"),
+                epic_name=args.get("epic_name"),
+                exclude_subtasks=args.get("exclude_subtasks", False),
+            )
+        )
+    if name == "shortcut_refinement_list":
+        return shortcut.cmd_refinement_list(make_args(limit=args.get("limit", 10)))
 
     raise ValueError("Unknown tool: {0}".format(name))
 
@@ -494,7 +736,6 @@ def handle_request(message: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 "capabilities": {"tools": {}},
             },
         }
-        print(f"Sending initialize response: {json.dumps(response)}", file=sys.stderr, flush=True)
         return response
 
     if method == "notifications/initialized":

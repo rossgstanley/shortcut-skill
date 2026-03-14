@@ -17,6 +17,12 @@ Use this file as quick reference for common operations supported by `scripts/sho
 - `GET /workflows`: List workflows and their state IDs.
 - `GET /members`: List members and IDs.
 - `GET /labels`: List labels and IDs.
+- `GET /files`: List uploaded files.
+- `GET /files/{file_public_id}`: Get one uploaded file.
+- `POST /files`: Upload a file or image using multipart form data.
+- `GET /linked-files`: List linked files.
+- `GET /linked-files/{linked_file_id}`: Get one linked file.
+- `POST /linked-files`: Create a linked external file.
 - `POST /stories`: Create a story.
 - `PUT /stories/{story_id}`: Update story fields.
 - `POST /stories/{story_id}/comments`: Add a comment.
@@ -40,3 +46,5 @@ Use this file as quick reference for common operations supported by `scripts/sho
 - When unsure of writable fields, fetch the story and mirror key names from existing payload structure.
 - For MCP integration, run `scripts/shortcut_mcp_server.py` and expose it as a stdio server in your client configuration.
 - `list-stories` prints a table by default; pass `--json` for raw payloads.
+- For enum custom fields, Shortcut expects `value_id`, not `value`.
+- Uploaded files can be attached to a story with `story_id`; linked files are external URLs.

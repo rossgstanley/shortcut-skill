@@ -59,6 +59,8 @@ python3 scripts/shortcut.py search-epics --query "platform hardening" --limit 10
 python3 scripts/shortcut.py list-stories --limit 25 --sort state
 python3 scripts/shortcut.py list-stories --epic-id 1234
 python3 scripts/shortcut.py list-epics --active --sort points
+python3 scripts/shortcut.py list-files --story-id 1234
+python3 scripts/shortcut.py list-linked-files --story-id 1234
 python3 scripts/shortcut.py get-story --story-id 1234
 
 # Use raw JSON for scripting
@@ -133,6 +135,15 @@ python3 scripts/shortcut.py set-story-custom-fields \
 python3 scripts/shortcut.py update-story-labels \
   --story-id 1234 \
   --labels '[{"name":"Customer Escalation"}]'
+
+python3 scripts/shortcut.py upload-file \
+  --path ./diagram.png \
+  --story-id 1234
+
+python3 scripts/shortcut.py create-linked-file \
+  --name "Design Spec" \
+  --url "https://example.com/spec" \
+  --story-id 1234
 
 python3 scripts/shortcut.py comment-story \
   --story-id 1234 \

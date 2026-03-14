@@ -156,6 +156,81 @@ TOOLS: List[Dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "shortcut_list_files",
+        "description": "List uploaded Shortcut files, optionally filtered by story.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "story_id": {"type": "integer"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_get_file",
+        "description": "Get one uploaded Shortcut file by public ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_public_id": {"type": "string"}
+            },
+            "required": ["file_public_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_upload_file",
+        "description": "Upload a file or image to Shortcut, optionally attaching it to a story.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "name": {"type": "string"},
+                "story_id": {"type": "integer"}
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_list_linked_files",
+        "description": "List linked files, optionally filtered by story.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "story_id": {"type": "integer"}
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_get_linked_file",
+        "description": "Get one linked file by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "linked_file_id": {"type": "string"}
+            },
+            "required": ["linked_file_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_create_linked_file",
+        "description": "Create a linked file on Shortcut.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "url": {"type": "string"},
+                "type": {"type": "string"},
+                "story_id": {"type": "integer"}
+            },
+            "required": ["name", "url"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "shortcut_list_custom_fields",
         "description": "List Shortcut custom fields.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
@@ -516,6 +591,31 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return shortcut.cmd_list_members(make_args())
     if name == "shortcut_list_labels":
         return shortcut.cmd_list_labels(make_args())
+    if name == "shortcut_list_files":
+        return shortcut.cmd_list_files(make_args(story_id=args.get("story_id")))
+    if name == "shortcut_get_file":
+        return shortcut.cmd_get_file(make_args(file_public_id=args["file_public_id"]))
+    if name == "shortcut_upload_file":
+        return shortcut.cmd_upload_file(
+            make_args(
+                path=args["path"],
+                name=args.get("name"),
+                story_id=args.get("story_id"),
+            )
+        )
+    if name == "shortcut_list_linked_files":
+        return shortcut.cmd_list_linked_files(make_args(story_id=args.get("story_id")))
+    if name == "shortcut_get_linked_file":
+        return shortcut.cmd_get_linked_file(make_args(linked_file_id=args["linked_file_id"]))
+    if name == "shortcut_create_linked_file":
+        return shortcut.cmd_create_linked_file(
+            make_args(
+                name=args["name"],
+                url=args["url"],
+                type=args.get("type", "url"),
+                story_id=args.get("story_id"),
+            )
+        )
     if name == "shortcut_list_custom_fields":
         return shortcut.cmd_list_custom_fields(make_args())
     if name == "shortcut_get_custom_field":

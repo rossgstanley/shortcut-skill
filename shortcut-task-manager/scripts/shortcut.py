@@ -3,11 +3,13 @@
 
 import argparse
 import json
+import mimetypes
 import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Dict, Optional
 
 
@@ -72,6 +74,67 @@ def request(
         data=body,
         headers=headers,
         method=method.upper(),
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as err:
+        payload = err.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Shortcut API error {err.code}: {payload}") from err
+
+
+def request_multipart(
+    path: str,
+    fields: Optional[dict] = None,
+    files: Optional[list[dict]] = None,
+) -> dict:
+    token = os.environ.get("SHORTCUT_API_TOKEN")
+    if not token:
+        raise RuntimeError("Missing SHORTCUT_API_TOKEN environment variable")
+
+    boundary = f"----ShortcutSkill{uuid.uuid4().hex}"
+    body = bytearray()
+
+    def add_bytes(value: bytes) -> None:
+        body.extend(value)
+
+    for key, value in (fields or {}).items():
+        add_bytes(f"--{boundary}\r\n".encode("utf-8"))
+        add_bytes(f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode("utf-8"))
+        add_bytes(str(value).encode("utf-8"))
+        add_bytes(b"\r\n")
+
+    for item in files or []:
+        field_name = item["field_name"]
+        file_path = item["path"]
+        filename = item.get("filename") or os.path.basename(file_path)
+        content_type = item.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        with open(file_path, "rb") as handle:
+            file_bytes = handle.read()
+        add_bytes(f"--{boundary}\r\n".encode("utf-8"))
+        add_bytes(
+            (
+                f'Content-Disposition: form-data; name="{field_name}"; '
+                f'filename="{filename}"\r\n'
+            ).encode("utf-8")
+        )
+        add_bytes(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+        add_bytes(file_bytes)
+        add_bytes(b"\r\n")
+
+    add_bytes(f"--{boundary}--\r\n".encode("utf-8"))
+
+    req = urllib.request.Request(
+        url=build_url(path),
+        data=bytes(body),
+        headers={
+            "Shortcut-Token": token,
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
     )
 
     try:
@@ -423,6 +486,62 @@ def format_next_story_table(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def format_file_table(payload: dict) -> str:
+    files = payload.get("data", payload if isinstance(payload, list) else [])
+    if not files:
+        return "No files found."
+
+    columns = [
+        ("PublicID", lambda item: str(item.get("id", item.get("public_id", "")))),
+        ("Name", lambda item: item.get("name", item.get("filename", ""))),
+        ("StoryID", lambda item: str(item.get("story_id", ""))),
+        ("Size", lambda item: str(item.get("size", ""))),
+        ("URL", lambda item: item.get("url", "")),
+    ]
+
+    widths = []
+    for header, getter in columns:
+        max_width = len(header)
+        for item in files:
+            max_width = max(max_width, len(getter(item)))
+        widths.append(max_width)
+
+    lines = []
+    lines.append("  ".join(header.ljust(widths[index]) for index, (header, _) in enumerate(columns)))
+    lines.append("  ".join("-" * widths[index] for index in range(len(columns))))
+    for item in files:
+        lines.append("  ".join(getter(item).ljust(widths[index]) for index, (_, getter) in enumerate(columns)))
+    return "\n".join(lines)
+
+
+def format_linked_file_table(payload: dict) -> str:
+    files = payload.get("data", payload if isinstance(payload, list) else [])
+    if not files:
+        return "No linked files found."
+
+    columns = [
+        ("ID", lambda item: str(item.get("id", ""))),
+        ("Name", lambda item: item.get("name", "")),
+        ("StoryID", lambda item: str(item.get("story_id", ""))),
+        ("Type", lambda item: item.get("type", "")),
+        ("URL", lambda item: item.get("url", "")),
+    ]
+
+    widths = []
+    for header, getter in columns:
+        max_width = len(header)
+        for item in files:
+            max_width = max(max_width, len(getter(item)))
+        widths.append(max_width)
+
+    lines = []
+    lines.append("  ".join(header.ljust(widths[index]) for index, (header, _) in enumerate(columns)))
+    lines.append("  ".join("-" * widths[index] for index in range(len(columns))))
+    for item in files:
+        lines.append("  ".join(getter(item).ljust(widths[index]) for index, (_, getter) in enumerate(columns)))
+    return "\n".join(lines)
+
+
 def cmd_me(_: argparse.Namespace) -> dict:
     return request("GET", "/member")
 
@@ -621,6 +740,58 @@ def cmd_create_label(args: argparse.Namespace) -> dict:
     if args.description is not None:
         payload["description"] = args.description
     return request("POST", "/labels", data=payload)
+
+
+def cmd_list_files(args: argparse.Namespace) -> dict:
+    query = {}
+    if getattr(args, "story_id", None) is not None:
+        query["story_id"] = str(args.story_id)
+    result = request("GET", "/files", query=query or None)
+    files = result if isinstance(result, list) else result.get("data", [])
+    return {"data": files}
+
+
+def cmd_get_file(args: argparse.Namespace) -> dict:
+    return request("GET", f"/files/{args.file_public_id}")
+
+
+def cmd_upload_file(args: argparse.Namespace) -> dict:
+    if not os.path.exists(args.path):
+        raise RuntimeError(f"File not found: {args.path}")
+    fields = {}
+    if args.story_id is not None:
+        fields["story_id"] = args.story_id
+    return request_multipart(
+        "/files",
+        fields=fields,
+        files=[
+            {
+                "field_name": "file",
+                "path": args.path,
+                "filename": args.name,
+            }
+        ],
+    )
+
+
+def cmd_list_linked_files(args: argparse.Namespace) -> dict:
+    query = {}
+    if getattr(args, "story_id", None) is not None:
+        query["story_id"] = str(args.story_id)
+    result = request("GET", "/linked-files", query=query or None)
+    files = result if isinstance(result, list) else result.get("data", [])
+    return {"data": files}
+
+
+def cmd_get_linked_file(args: argparse.Namespace) -> dict:
+    return request("GET", f"/linked-files/{args.linked_file_id}")
+
+
+def cmd_create_linked_file(args: argparse.Namespace) -> dict:
+    payload = {"name": args.name, "type": args.type, "url": args.url}
+    if args.story_id is not None:
+        payload["story_id"] = args.story_id
+    return request("POST", "/linked-files", data=payload)
 
 
 def cmd_create_story(args: argparse.Namespace) -> dict:
@@ -1101,6 +1272,37 @@ def parser() -> argparse.ArgumentParser:
     list_labels = sub.add_parser("list-labels", help="List labels")
     list_labels.set_defaults(func=cmd_list_labels)
 
+    list_files = sub.add_parser("list-files", help="List uploaded files")
+    list_files.add_argument("--story-id", type=int)
+    list_files.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
+    list_files.set_defaults(func=cmd_list_files)
+
+    get_file = sub.add_parser("get-file", help="Get one uploaded file")
+    get_file.add_argument("--file-public-id", required=True)
+    get_file.set_defaults(func=cmd_get_file)
+
+    upload_file = sub.add_parser("upload-file", help="Upload a file or image")
+    upload_file.add_argument("--path", required=True)
+    upload_file.add_argument("--name")
+    upload_file.add_argument("--story-id", type=int)
+    upload_file.set_defaults(func=cmd_upload_file)
+
+    list_linked_files = sub.add_parser("list-linked-files", help="List linked files")
+    list_linked_files.add_argument("--story-id", type=int)
+    list_linked_files.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
+    list_linked_files.set_defaults(func=cmd_list_linked_files)
+
+    get_linked_file = sub.add_parser("get-linked-file", help="Get one linked file")
+    get_linked_file.add_argument("--linked-file-id", required=True)
+    get_linked_file.set_defaults(func=cmd_get_linked_file)
+
+    create_linked_file = sub.add_parser("create-linked-file", help="Create a linked file")
+    create_linked_file.add_argument("--name", required=True)
+    create_linked_file.add_argument("--url", required=True)
+    create_linked_file.add_argument("--type", default="url")
+    create_linked_file.add_argument("--story-id", type=int)
+    create_linked_file.set_defaults(func=cmd_create_linked_file)
+
     list_custom_fields = sub.add_parser("list-custom-fields", help="List custom fields")
     list_custom_fields.set_defaults(func=cmd_list_custom_fields)
 
@@ -1297,6 +1499,14 @@ def main() -> int:
 
     if args.command in {"list-epics", "search-epics"} and not args.json:
         print(format_epic_table(result))
+        return 0
+
+    if args.command == "list-files" and not args.json:
+        print(format_file_table(result))
+        return 0
+
+    if args.command == "list-linked-files" and not args.json:
+        print(format_linked_file_table(result))
         return 0
 
     print(json.dumps(result, indent=2, sort_keys=True))

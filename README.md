@@ -19,6 +19,8 @@ The skill supports common Shortcut workflows such as:
 - creating and updating stories
 - creating and updating epics
 - adding comments
+- uploading files and images
+- creating linked files
 - setting labels
 - setting custom fields
 - resolving team/group IDs for writes
@@ -157,6 +159,23 @@ python3 shortcut-task-manager/scripts/shortcut.py bulk-update-stories \
 ```
 
 Then rerun with `--yes` to apply the batch.
+
+Upload an image to a story:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py upload-file \
+  --path ./diagram.png \
+  --story-id 1234
+```
+
+Create a linked external file on a story:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py create-linked-file \
+  --name "Design Spec" \
+  --url "https://example.com/spec" \
+  --story-id 1234
+```
 
 ## MCP
 

@@ -179,6 +179,19 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "shortcut_download_file",
+        "description": "Download one uploaded Shortcut file to disk by public ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file_public_id": {"type": "string"},
+                "output": {"type": "string"}
+            },
+            "required": ["file_public_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "shortcut_upload_file",
         "description": "Upload a file or image to Shortcut, optionally attaching it to a story.",
         "inputSchema": {
@@ -524,6 +537,23 @@ TOOLS: List[Dict[str, Any]] = [
             "additionalProperties": False
         }
     },
+    {
+        "name": "shortcut_weekly_report",
+        "description": "Generate a markdown weekly report grouped by Monday-based completion weeks.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "done_state_name": {"type": "string", "default": "Done"},
+                "todo_state_name": {"type": "string", "default": "To Do"},
+                "done_limit": {"type": "integer", "minimum": 1, "default": 100},
+                "todo_limit": {"type": "integer", "minimum": 1, "default": 25},
+                "timezone": {"type": "string", "default": "Pacific/Auckland"},
+                "output": {"type": "string"},
+                "pdf_output": {"type": "string"}
+            },
+            "additionalProperties": False
+        }
+    },
 ]
 
 
@@ -595,6 +625,13 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return shortcut.cmd_list_files(make_args(story_id=args.get("story_id")))
     if name == "shortcut_get_file":
         return shortcut.cmd_get_file(make_args(file_public_id=args["file_public_id"]))
+    if name == "shortcut_download_file":
+        return shortcut.cmd_download_file(
+            make_args(
+                file_public_id=args["file_public_id"],
+                output=args.get("output"),
+            )
+        )
     if name == "shortcut_upload_file":
         return shortcut.cmd_upload_file(
             make_args(
@@ -808,6 +845,18 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         )
     if name == "shortcut_refinement_list":
         return shortcut.cmd_refinement_list(make_args(limit=args.get("limit", 10)))
+    if name == "shortcut_weekly_report":
+        return shortcut.cmd_weekly_report(
+            make_args(
+                done_state_name=args.get("done_state_name", "Done"),
+                todo_state_name=args.get("todo_state_name", "To Do"),
+                done_limit=args.get("done_limit", 100),
+                todo_limit=args.get("todo_limit", 25),
+                timezone=args.get("timezone", "Pacific/Auckland"),
+                output=args.get("output"),
+                pdf_output=args.get("pdf_output"),
+            )
+        )
 
     raise ValueError("Unknown tool: {0}".format(name))
 

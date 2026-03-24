@@ -168,6 +168,18 @@ python3 shortcut-task-manager/scripts/shortcut.py upload-file \
   --story-id 1234
 ```
 
+Download an uploaded file from Shortcut:
+
+```bash
+python3 shortcut-task-manager/scripts/shortcut.py download-file \
+  --file-public-id FILE_PUBLIC_ID \
+  --output ./attachment.png
+```
+
+Note:
+- some Shortcut media URLs may reject API-token access and require a logged-in browser session cookie
+- in that case `download-file` returns a structured `download_blocked` result with the file metadata and media URL instead of writing the binary to disk
+
 Create a linked external file on a story:
 
 ```bash

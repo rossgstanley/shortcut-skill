@@ -5,15 +5,22 @@ import argparse
 import json
 import mimetypes
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timedelta
+from html import escape
 from typing import Dict, Optional
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_BASE_URL = "https://api.app.shortcut.com/api/v3"
+DEFAULT_WEEKLY_REPORT_PATH = "/tmp/shortcut-weekly-report.md"
+DEFAULT_WEEKLY_REPORT_PDF_PATH = "/tmp/shortcut-weekly-report.pdf"
+DEFAULT_WEEKLY_REPORT_TEX_PATH = "/tmp/shortcut-weekly-report.tex"
 
 
 def load_dotenv() -> None:
@@ -144,6 +151,46 @@ def request_multipart(
     except urllib.error.HTTPError as err:
         payload = err.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Shortcut API error {err.code}: {payload}") from err
+
+
+def download_to_path(url: str, output_path: str) -> dict:
+    token = os.environ.get("SHORTCUT_API_TOKEN")
+    headers = {}
+    if token:
+        headers["Shortcut-Token"] = token
+    req = urllib.request.Request(url=url, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            content = resp.read()
+            content_type = resp.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as err:
+        payload = err.read().decode("utf-8", errors="replace")
+        if err.code == 401:
+            return {
+                "download_blocked": True,
+                "reason": "unauthorized_media_host",
+                "message": (
+                    "Shortcut file metadata was retrieved successfully, but the media host did not accept "
+                    "API-token access. This attachment may require a logged-in browser session cookie instead "
+                    "of the Shortcut API token."
+                ),
+                "http_status": 401,
+                "source_url": url,
+            }
+        raise RuntimeError(f"File download error {err.code}: {payload}") from err
+
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if output_dir and not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, "wb") as handle:
+        handle.write(content)
+
+    return {
+        "output_path": os.path.abspath(output_path),
+        "bytes_written": len(content),
+        "content_type": content_type,
+        "source_url": url,
+    }
 
 
 def search_stories(query: str, limit: int) -> dict:
@@ -542,6 +589,457 @@ def format_linked_file_table(payload: dict) -> str:
     return "\n".join(lines)
 
 
+def parse_shortcut_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def to_timezone(value: Optional[str], timezone_name: str) -> Optional[datetime]:
+    timestamp = parse_shortcut_datetime(value)
+    if timestamp is None:
+        return None
+    return timestamp.astimezone(ZoneInfo(timezone_name))
+
+
+def format_local_date(value: Optional[str], timezone_name: str) -> str:
+    timestamp = to_timezone(value, timezone_name)
+    if timestamp is None:
+        return "-"
+    return timestamp.strftime("%Y-%m-%d")
+
+
+def format_generated_timestamp(timezone_name: str) -> str:
+    return datetime.now(ZoneInfo(timezone_name)).strftime("%d %B %Y %H:%M %Z")
+
+
+def monday_start(value: Optional[str], timezone_name: str) -> Optional[datetime]:
+    timestamp = to_timezone(value, timezone_name)
+    if timestamp is None:
+        return None
+    monday = timestamp - timedelta(days=timestamp.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def priority_label(story: dict, priority_field_ids: set[str]) -> str:
+    field_values = story.get("custom_fields", [])
+    for field in field_values:
+        field_id = field.get("field_id")
+        if field_id in priority_field_ids or normalize_name(field.get("name", "")) == "priority":
+            return field.get("value", "") or "-"
+    return "-"
+
+
+def owner_label(story: dict, members: dict[str, str]) -> str:
+    owner_ids = story.get("owner_ids", [])
+    if not owner_ids:
+        return "-"
+    names = [members.get(owner_id, str(owner_id)) for owner_id in owner_ids]
+    return ", ".join(name for name in names if name) or "-"
+
+
+def priority_sort_key(story: dict, priority_field_ids: set[str]) -> int:
+    label = normalize_name(priority_label(story, priority_field_ids))
+    ranks = {"highest": 5, "high": 4, "medium": 3, "low": 2, "lowest": 1}
+    return ranks.get(label, 0)
+
+
+def weekly_report_row(
+    story: dict,
+    epics: dict[int, str],
+    members: dict[str, str],
+    workflow_states: dict[int, str],
+    priority_field_ids: set[str],
+    timezone_name: str,
+    updated_field: str = "updated_at",
+) -> str:
+    epic_name = epics.get(story.get("epic_id"), "-") or "-"
+    title = story.get("name", "") or "-"
+    assignee = owner_label(story, members)
+    state = story.get("workflow_state_name", "") or workflow_states.get(story.get("workflow_state_id"), "-") or "-"
+    story_type = story.get("story_type", "") or "-"
+    priority = priority_label(story, priority_field_ids)
+    story_id = story.get("id", "")
+    ticket_url = story.get("app_url", "") or "#"
+    ticket_label = f"#{story_id}" if story_id else "-"
+    last_updated = format_local_date(story.get(updated_field), timezone_name)
+    moved_to_done = format_local_date(story.get("completed_at"), timezone_name)
+    return (
+        "<tr>"
+        f'<td class="wrap epic">{escape(epic_name)}</td>'
+        f'<td class="wrap title">{escape(title)}</td>'
+        f"<td>{escape(assignee)}</td>"
+        f"<td>{escape(state)}</td>"
+        f"<td>{escape(story_type)}</td>"
+        f"<td>{escape(priority)}</td>"
+        f'<td><a href="{escape(ticket_url)}">{escape(ticket_label)}</a></td>'
+        f"<td>{escape(last_updated)}</td>"
+        f"<td>{escape(moved_to_done)}</td>"
+        "</tr>"
+    )
+
+
+def render_weekly_report_table(
+    stories: list[dict],
+    epics: dict[int, str],
+    members: dict[str, str],
+    workflow_states: dict[int, str],
+    priority_field_ids: set[str],
+    timezone_name: str,
+    updated_field: str = "updated_at",
+) -> str:
+    if not stories:
+        return "<p class=\"empty\">No stories found.</p>"
+
+    rows = [
+        weekly_report_row(story, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field)
+        for story in stories
+    ]
+    return "\n".join(
+        [
+            '<table class="shortcut-weekly-report-table">',
+            "<colgroup>",
+            '<col class="col-epic" />',
+            '<col class="col-title" />',
+            '<col class="col-assignee" />',
+            '<col class="col-state" />',
+            '<col class="col-type" />',
+            '<col class="col-priority" />',
+            '<col class="col-ticket" />',
+            '<col class="col-date" />',
+            '<col class="col-date" />',
+            "</colgroup>",
+            "<thead>",
+            "<tr>",
+            "<th>Epic</th>",
+            "<th>Title</th>",
+            "<th>Assignee</th>",
+            "<th>State</th>",
+            "<th>Type</th>",
+            "<th>Priority</th>",
+            "<th>Ticket</th>",
+            "<th>Last Updated</th>",
+            "<th>Moved to Done</th>",
+            "</tr>",
+            "</thead>",
+            "<tbody>",
+            *rows,
+            "</tbody>",
+            "</table>",
+        ]
+    )
+
+
+def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories: list[dict], todo_stories: list[dict], timezone_name: str) -> str:
+    epics = {epic.get("id"): epic.get("name", "") for epic in cmd_list_epics(argparse.Namespace(active=False, sort=None))}
+    members = {
+        member.get("id"): member.get("profile", {}).get("name", member.get("name", ""))
+        for member in cmd_list_members(argparse.Namespace())
+    }
+    workflow_states = {
+        state.get("id"): state.get("name", "")
+        for workflow in cmd_list_workflows(argparse.Namespace())
+        for state in workflow.get("states", [])
+    }
+    priority_field_ids = {
+        field.get("id")
+        for field in cmd_list_custom_fields(argparse.Namespace())
+        if normalize_name(field.get("name", "")) == "priority" and field.get("id")
+    }
+
+    sections = [
+        "# Shortcut Ticket Report",
+        "",
+        "<style>",
+        ".shortcut-report-generated { font-size: 0.85em; color: #666; margin: 0 0 1rem; }",
+        ".shortcut-weekly-report-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.92em; }",
+        ".shortcut-weekly-report-table th, .shortcut-weekly-report-table td { border: 1px solid #d7d7d7; padding: 0.45rem 0.5rem; vertical-align: top; }",
+        ".shortcut-weekly-report-table th { background: #f6f6f6; text-align: left; }",
+        ".shortcut-weekly-report-table td { white-space: nowrap; }",
+        ".shortcut-weekly-report-table td.wrap, .shortcut-weekly-report-table td.wrap * { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }",
+        ".shortcut-weekly-report-table .col-epic { width: 18%; }",
+        ".shortcut-weekly-report-table .col-title { width: 25%; }",
+        ".shortcut-weekly-report-table .col-assignee { width: 12%; }",
+        ".shortcut-weekly-report-table .col-state { width: 8%; }",
+        ".shortcut-weekly-report-table .col-type { width: 7%; }",
+        ".shortcut-weekly-report-table .col-priority { width: 8%; }",
+        ".shortcut-weekly-report-table .col-ticket { width: 8%; }",
+        ".shortcut-weekly-report-table .col-date { width: 7%; }",
+        ".empty { color: #666; font-style: italic; }",
+        "</style>",
+        "",
+        f'<p class="shortcut-report-generated">Generated: {escape(format_generated_timestamp(timezone_name))} ({escape(timezone_name)})</p>',
+        "",
+    ]
+
+    stories_by_week: dict[datetime, list[dict]] = {}
+    resolved_sections = []
+    for story in done_stories:
+        week_start = monday_start(story.get("completed_at"), timezone_name)
+        if week_start is None:
+            continue
+        stories_by_week.setdefault(week_start, []).append(story)
+
+    for week_start in sorted(stories_by_week.keys(), reverse=True):
+        stories = sorted(
+            stories_by_week[week_start],
+            key=lambda story: (
+                to_timezone(story.get("completed_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+                to_timezone(story.get("updated_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            ),
+            reverse=True,
+        )
+        resolved_sections.extend(
+            [
+                f"## Resolved: Week Commencing {week_start.strftime('%-d %B %Y')}",
+                "",
+                render_weekly_report_table(
+                    stories, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field="completed_at"
+                ),
+                "",
+            ]
+        )
+
+    sections.extend(
+        [
+            *(
+                [
+                    "## To Do",
+                    "",
+                    render_weekly_report_table(todo_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
+                    "",
+                ]
+                if todo_stories
+                else []
+            ),
+            *(
+                [
+                    "## In Progress",
+                    "",
+                    render_weekly_report_table(in_progress_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
+                    "",
+                ]
+                if in_progress_stories
+                else []
+            ),
+        ]
+    )
+    sections.extend(resolved_sections)
+    return "\n".join(sections)
+
+
+def latex_escape(value: str) -> str:
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    return "".join(replacements.get(char, char) for char in value)
+
+
+def normalize_weekly_report_row(
+    story: dict,
+    epics: dict[int, str],
+    members: dict[str, str],
+    workflow_states: dict[int, str],
+    priority_field_ids: set[str],
+    timezone_name: str,
+    updated_field: str = "updated_at",
+) -> dict:
+    story_id = story.get("id", "")
+    return {
+        "epic": epics.get(story.get("epic_id"), "-") or "-",
+        "title": story.get("name", "") or "-",
+        "assignee": owner_label(story, members),
+        "state": story.get("workflow_state_name", "") or workflow_states.get(story.get("workflow_state_id"), "-") or "-",
+        "type": story.get("story_type", "") or "-",
+        "priority": priority_label(story, priority_field_ids),
+        "ticket_id": f"#{story_id}" if story_id else "-",
+        "url": story.get("app_url", "") or "",
+        "updated_at": format_local_date(story.get(updated_field), timezone_name),
+        "completed_at": format_local_date(story.get("completed_at"), timezone_name),
+    }
+
+
+def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stories: list[dict], todo_stories: list[dict], timezone_name: str) -> list[dict]:
+    epics = {epic.get("id"): epic.get("name", "") for epic in cmd_list_epics(argparse.Namespace(active=False, sort=None))}
+    members = {
+        member.get("id"): member.get("profile", {}).get("name", member.get("name", ""))
+        for member in cmd_list_members(argparse.Namespace())
+    }
+    workflow_states = {
+        state.get("id"): state.get("name", "")
+        for workflow in cmd_list_workflows(argparse.Namespace())
+        for state in workflow.get("states", [])
+    }
+    priority_field_ids = {
+        field.get("id")
+        for field in cmd_list_custom_fields(argparse.Namespace())
+        if normalize_name(field.get("name", "")) == "priority" and field.get("id")
+    }
+
+    in_progress_stories = sorted(
+        in_progress_stories,
+        key=lambda story: (
+            priority_sort_key(story, priority_field_ids),
+            to_timezone(story.get("updated_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+        ),
+        reverse=True,
+    )
+
+    todo_stories = sorted(
+        todo_stories,
+        key=lambda story: (
+            priority_sort_key(story, priority_field_ids),
+            to_timezone(story.get("created_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+        ),
+        reverse=True,
+    )
+
+    sections = []
+    stories_by_week: dict[datetime, list[dict]] = {}
+    for story in done_stories:
+        week_start = monday_start(story.get("completed_at"), timezone_name)
+        if week_start is None:
+            continue
+        stories_by_week.setdefault(week_start, []).append(story)
+
+    if todo_stories:
+        sections.append(
+            {
+                "title": "To Do",
+                "rows": [
+                    normalize_weekly_report_row(
+                        story, epics, members, workflow_states, priority_field_ids, timezone_name
+                    )
+                    for story in todo_stories
+                ],
+            }
+        )
+
+    if in_progress_stories:
+        sections.append(
+            {
+                "title": "In Progress",
+                "rows": [
+                    normalize_weekly_report_row(
+                        story, epics, members, workflow_states, priority_field_ids, timezone_name
+                    )
+                    for story in in_progress_stories
+                ],
+            }
+        )
+
+    for week_start in sorted(stories_by_week.keys(), reverse=True):
+        ordered_stories = sorted(
+            stories_by_week[week_start],
+            key=lambda story: (
+                to_timezone(story.get("completed_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+                to_timezone(story.get("updated_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            ),
+            reverse=True,
+        )
+        sections.append(
+            {
+                "title": f"Resolved Week Commencing {week_start.strftime('%-d %B %Y')}",
+                "rows": [
+                    normalize_weekly_report_row(
+                        story, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field="completed_at"
+                    )
+                    for story in ordered_stories
+                ],
+            }
+        )
+    return sections
+
+
+def render_weekly_report_tex(sections: list[dict], timezone_name: str) -> str:
+    parts = [
+        r"\documentclass[10pt]{article}",
+        r"\usepackage[a4paper,landscape,margin=14mm]{geometry}",
+        r"\usepackage{longtable}",
+        r"\usepackage{booktabs}",
+        r"\usepackage{array}",
+        r"\usepackage[table]{xcolor}",
+        r"\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}",
+        r"\usepackage{fontspec}",
+        r"\setmainfont{Helvetica}",
+        r"\definecolor{HeaderGray}{HTML}{EAEAEA}",
+        r"\definecolor{RuleGray}{HTML}{CFCFCF}",
+        r"\arrayrulecolor{RuleGray}",
+        r"\renewcommand{\arraystretch}{1.2}",
+        r"\setlength{\tabcolsep}{3pt}",
+        r"\setlength{\LTpre}{0pt}",
+        r"\setlength{\LTpost}{0pt}",
+        r"\begin{document}",
+        r"\section*{Shortcut Ticket Report}",
+        r"\vspace{-1.1em}",
+        rf"\noindent\small Generated: {latex_escape(format_generated_timestamp(timezone_name))} ({latex_escape(timezone_name)})\normalsize",
+        r"\vspace{0.15em}",
+    ]
+
+    for section in sections:
+        rows = section["rows"]
+        title = latex_escape(f"{section['title']} ({len(rows)})")
+        parts.extend(
+            [
+                "",
+                rf"\subsection*{{{title}}}",
+                r"\vspace{-0.45em}",
+                r"\vspace{1.5mm}",
+                r"{\small",
+                r"\rowcolors{2}{white}{gray!3}",
+                r"\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.18\linewidth}>{\raggedright\arraybackslash}p{0.39\linewidth}>{\raggedright\arraybackslash}p{0.085\linewidth}>{\raggedright\arraybackslash}p{0.055\linewidth}>{\raggedright\arraybackslash}p{0.06\linewidth}>{\raggedright\arraybackslash}p{0.065\linewidth}>{\raggedright\arraybackslash}p{0.05\linewidth}>{\raggedright\arraybackslash}p{0.075\linewidth}@{}}",
+                r"\rowcolor{HeaderGray}",
+                r"\textbf{Epic} & \textbf{Title} & \textbf{Assignee} & \textbf{State} & \textbf{Type} & \textbf{Priority} & \textbf{Ticket} & \textbf{Updated} \\",
+                r"\toprule",
+                r"\endfirsthead",
+                r"\rowcolor{HeaderGray}",
+                r"\textbf{Epic} & \textbf{Title} & \textbf{Assignee} & \textbf{State} & \textbf{Type} & \textbf{Priority} & \textbf{Ticket} & \textbf{Updated} \\",
+                r"\toprule",
+                r"\endhead",
+                r"\midrule",
+                r"\multicolumn{8}{r}{\small\itshape Continued on next page} \\",
+                r"\endfoot",
+                r"\bottomrule",
+                r"\endlastfoot",
+            ]
+        )
+        for row in rows:
+            ticket_cell = latex_escape(row["ticket_id"])
+            if row["url"]:
+                ticket_cell = rf"\href{{{latex_escape(row['url'])}}}{{\texttt{{{ticket_cell}}}}}"
+            parts.append(
+                " & ".join(
+                    [
+                        latex_escape(row["epic"]),
+                        latex_escape(row["title"]),
+                        latex_escape(row["assignee"]),
+                        latex_escape(row["state"]),
+                        latex_escape(row["type"]),
+                        latex_escape(row["priority"]),
+                        ticket_cell,
+                        latex_escape(row["updated_at"]),
+                    ]
+                )
+                + r" \\"
+            )
+        parts.extend([r"\end{longtable}", r"}"])
+
+    parts.append(r"\end{document}")
+    return "\n".join(parts)
+
+
 def cmd_me(_: argparse.Namespace) -> dict:
     return request("GET", "/member")
 
@@ -772,6 +1270,28 @@ def cmd_upload_file(args: argparse.Namespace) -> dict:
             }
         ],
     )
+
+
+def cmd_download_file(args: argparse.Namespace) -> dict:
+    file_info = cmd_get_file(argparse.Namespace(file_public_id=args.file_public_id))
+    file_url = file_info.get("url")
+    if not file_url:
+        raise RuntimeError(f"Shortcut file {args.file_public_id} does not include a downloadable url")
+    output_path = args.output
+    if output_path is None:
+        output_path = file_info.get("filename") or file_info.get("name") or f"{args.file_public_id}.bin"
+    result = download_to_path(file_url, output_path)
+    if result.get("download_blocked"):
+        return {
+            "file_public_id": args.file_public_id,
+            "file": file_info,
+            "download": result,
+        }
+    return {
+        "file_public_id": args.file_public_id,
+        "file": file_info,
+        "download": result,
+    }
 
 
 def cmd_list_linked_files(args: argparse.Namespace) -> dict:
@@ -1118,6 +1638,112 @@ def cmd_refinement_list(args: argparse.Namespace) -> dict:
     return {"data": candidates[: args.limit], "total": len(candidates)}
 
 
+def cmd_weekly_report(args: argparse.Namespace) -> dict:
+    done_result = search_stories(f'state:"{args.done_state_name}"', args.done_limit)
+    in_progress_result = search_stories(f'state:"{args.in_progress_state_name}"', args.in_progress_limit)
+    in_review_result = search_stories(f'state:"{args.in_review_state_name}"', args.in_progress_limit)
+    todo_result = search_stories(f'state:"{args.todo_state_name}"', args.todo_limit)
+
+    done_stories = [story for story in done_result.get("data", []) if story.get("completed_at")]
+    in_progress_stories = []
+    seen_in_progress_story_ids = set()
+    for result in (in_progress_result, in_review_result):
+        for story in result.get("data", []):
+            story_id = story.get("id")
+            if story_id in seen_in_progress_story_ids:
+                continue
+            seen_in_progress_story_ids.add(story_id)
+            in_progress_stories.append(story)
+    todo_stories = list(todo_result.get("data", []))
+
+    done_stories.sort(
+        key=lambda story: (
+            to_timezone(story.get("completed_at"), args.timezone) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            to_timezone(story.get("updated_at"), args.timezone) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+        ),
+        reverse=True,
+    )
+
+    sections = normalize_weekly_report_sections(done_stories, in_progress_stories, todo_stories, args.timezone)
+    markdown = render_weekly_report_markdown(done_stories, in_progress_stories, todo_stories, args.timezone)
+    output_path = getattr(args, "output", None)
+    if output_path:
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(markdown)
+
+    tex_output_path = getattr(args, "tex_output", None)
+    if tex_output_path:
+        tex_output_dir = os.path.dirname(os.path.abspath(tex_output_path))
+        if tex_output_dir and not os.path.exists(tex_output_dir):
+            os.makedirs(tex_output_dir, exist_ok=True)
+        with open(tex_output_path, "w", encoding="utf-8") as handle:
+            handle.write(render_weekly_report_tex(sections, args.timezone))
+
+    pdf_output_path = getattr(args, "pdf_output", None)
+    if pdf_output_path:
+        if not tex_output_path:
+            raise RuntimeError("PDF export requires a TeX output path")
+        pdf_output_dir = os.path.dirname(os.path.abspath(pdf_output_path))
+        if pdf_output_dir and not os.path.exists(pdf_output_dir):
+            os.makedirs(pdf_output_dir, exist_ok=True)
+        try:
+            subprocess.run(
+                [
+                    "xelatex",
+                    "-interaction=nonstopmode",
+                    f"-output-directory={pdf_output_dir or '/tmp'}",
+                    os.path.abspath(tex_output_path),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            generated_pdf = os.path.join(
+                pdf_output_dir or "/tmp",
+                os.path.splitext(os.path.basename(tex_output_path))[0] + ".pdf",
+            )
+            if os.path.abspath(generated_pdf) != os.path.abspath(pdf_output_path):
+                os.replace(generated_pdf, os.path.abspath(pdf_output_path))
+        except FileNotFoundError as err:
+            raise RuntimeError("PDF export requires xelatex to be installed") from err
+        except subprocess.CalledProcessError as err:
+            detail = err.stderr.strip() or err.stdout.strip() or "unknown xelatex error"
+            raise RuntimeError(f"PDF export failed: {detail}") from err
+
+    pdf_text_preview = None
+    if pdf_output_path:
+        try:
+            preview = subprocess.run(
+                ["pdftotext", os.path.abspath(pdf_output_path), "-"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            pdf_text_preview = "\n".join(preview.stdout.splitlines()[:80])
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pdf_text_preview = None
+
+    return {
+        "generated_at": format_generated_timestamp(args.timezone),
+        "timezone": args.timezone,
+        "done_state_name": args.done_state_name,
+        "in_progress_state_names": [args.in_progress_state_name, args.in_review_state_name],
+        "todo_state_name": args.todo_state_name,
+        "resolved_total": len(done_stories),
+        "in_progress_total": len(in_progress_stories),
+        "todo_total": len(todo_stories),
+        "markdown": markdown,
+        "output_path": os.path.abspath(output_path) if output_path else None,
+        "pdf_output_path": os.path.abspath(pdf_output_path) if pdf_output_path else None,
+        "pdf_text_preview": pdf_text_preview,
+    }
+
+
 def cmd_set_story_custom_fields(args: argparse.Namespace) -> dict:
     payload = {}
     custom_fields = parse_json_arg(args.custom_fields, "custom_fields")
@@ -1280,6 +1906,11 @@ def parser() -> argparse.ArgumentParser:
     get_file = sub.add_parser("get-file", help="Get one uploaded file")
     get_file.add_argument("--file-public-id", required=True)
     get_file.set_defaults(func=cmd_get_file)
+
+    download_file = sub.add_parser("download-file", help="Download one uploaded file")
+    download_file.add_argument("--file-public-id", required=True)
+    download_file.add_argument("--output")
+    download_file.set_defaults(func=cmd_download_file)
 
     upload_file = sub.add_parser("upload-file", help="Upload a file or image")
     upload_file.add_argument("--path", required=True)
@@ -1471,6 +2102,21 @@ def parser() -> argparse.ArgumentParser:
     refinement_list.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
     refinement_list.set_defaults(func=cmd_refinement_list)
 
+    weekly_report = sub.add_parser("weekly-report", help="Generate a weekly Shortcut markdown report")
+    weekly_report.add_argument("--done-state-name", default="Done")
+    weekly_report.add_argument("--in-progress-state-name", default="In Progress")
+    weekly_report.add_argument("--in-review-state-name", default="In Review")
+    weekly_report.add_argument("--todo-state-name", default="To Do")
+    weekly_report.add_argument("--done-limit", type=int, default=100)
+    weekly_report.add_argument("--in-progress-limit", type=int, default=50)
+    weekly_report.add_argument("--todo-limit", type=int, default=25)
+    weekly_report.add_argument("--timezone", default="Pacific/Auckland")
+    weekly_report.add_argument("--output", default=DEFAULT_WEEKLY_REPORT_PATH)
+    weekly_report.add_argument("--tex-output", default=DEFAULT_WEEKLY_REPORT_TEX_PATH)
+    weekly_report.add_argument("--pdf-output")
+    weekly_report.add_argument("--json", action="store_true", help="Print report metadata as JSON")
+    weekly_report.set_defaults(func=cmd_weekly_report)
+
     return p
 
 
@@ -1495,6 +2141,10 @@ def main() -> int:
 
     if args.command == "refinement-list" and not args.json:
         print(format_refinement_table(result))
+        return 0
+
+    if args.command == "weekly-report" and not args.json:
+        print(result["markdown"])
         return 0
 
     if args.command in {"list-epics", "search-epics"} and not args.json:

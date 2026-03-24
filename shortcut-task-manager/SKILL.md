@@ -62,6 +62,9 @@ python3 scripts/shortcut.py list-epics --active --sort points
 python3 scripts/shortcut.py list-files --story-id 1234
 python3 scripts/shortcut.py list-linked-files --story-id 1234
 python3 scripts/shortcut.py get-story --story-id 1234
+python3 scripts/shortcut.py download-file --file-public-id FILE_PUBLIC_ID --output ./attachment.png
+python3 scripts/shortcut.py weekly-report --timezone Pacific/Auckland
+python3 scripts/shortcut.py weekly-report --timezone Pacific/Auckland --output /tmp/shortcut-weekly-report.md --pdf-output /tmp/shortcut-weekly-report.pdf
 
 # Use raw JSON for scripting
 python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10 --json
@@ -158,6 +161,24 @@ python3 scripts/shortcut.py update-epic-labels --epic-id 1234 --labels '[{"name"
 Custom field note:
 - Enum custom fields in Shortcut expect `value_id`, not `value`.
 - The safest path is `set-story-custom-field --field-name ... --value-name ...` because the helper resolves the correct enum `value_id` automatically.
+
+File note:
+- `download-file` resolves Shortcut file metadata and attempts a direct binary download.
+- Some Shortcut media URLs may still reject API-token access and require a logged-in browser session cookie.
+- In that case, `download-file` returns a structured `download_blocked` result with the media URL instead of failing generically.
+
+Reporting note:
+- `weekly-report` generates a markdown report with Monday-based resolved-week groupings, assignees, and date-only table columns.
+- By default it writes markdown to `/tmp/shortcut-weekly-report.md`; override with `--output`.
+- Pass `--tex-output /path/to/report.tex` and `--pdf-output /path/to/report.pdf` to export a LaTeX `longtable` report and a XeLaTeX-rendered PDF.
+- For wide tabular exports, do not rely on Pandoc’s default Markdown table conversion.
+- Prefer normalized Shortcut data -> explicit LaTeX `longtable` -> `xelatex`.
+- Use A4 landscape when more than 6 columns are required.
+- Verify generated PDFs with `pdftotext` when possible.
+
+Permissions note:
+- The skill cannot bypass Codex sandbox/network policy by itself.
+- The practical fix is a one-time approval for the Shortcut CLI prefix, for example `python3 scripts/shortcut.py`, so common skill commands can reuse that approval.
 
 Known workspace quirks:
 - owner IDs may be UUID strings rather than integers

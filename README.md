@@ -54,9 +54,9 @@ Optional local recipe or migration files should live outside the generic skill s
 
 This repo has three layers:
 
-- CLI: [shortcut.py](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/scripts/shortcut.py) contains the core Shortcut API logic and can be run directly from the terminal.
-- Skill: [SKILL.md](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/SKILL.md) tells Codex how to use the CLI and what workflows to prefer.
-- MCP server: [shortcut_mcp_server.py](/Users/rossstanley/dev/shortcut-skill/shortcut-task-manager/scripts/shortcut_mcp_server.py) exposes the same core operations to MCP-compatible clients over stdio.
+- CLI: `shortcut-task-manager/scripts/shortcut.py` contains the core Shortcut API logic and can be run directly from the terminal.
+- Skill: `shortcut-task-manager/SKILL.md` tells Codex how to use the CLI and what workflows to prefer.
+- MCP server: `shortcut-task-manager/scripts/shortcut_mcp_server.py` exposes the same core operations to MCP-compatible clients over stdio.
 
 In practice:
 

@@ -18,9 +18,6 @@ from zoneinfo import ZoneInfo
 
 
 DEFAULT_BASE_URL = "https://api.app.shortcut.com/api/v3"
-DEFAULT_WEEKLY_REPORT_PATH = "/tmp/shortcut-weekly-report.md"
-DEFAULT_WEEKLY_REPORT_PDF_PATH = "/tmp/shortcut-weekly-report.pdf"
-DEFAULT_WEEKLY_REPORT_TEX_PATH = "/tmp/shortcut-weekly-report.tex"
 
 
 def load_dotenv() -> None:
@@ -212,6 +209,21 @@ def parse_json_arg(raw: Optional[str], field_name: str):
 
 def normalize_name(value: str) -> str:
     return value.strip().lower()
+
+
+def slugify(value: str) -> str:
+    cleaned = []
+    previous_was_dash = False
+    for char in value.strip().lower():
+        if char.isalnum():
+            cleaned.append(char)
+            previous_was_dash = False
+            continue
+        if previous_was_dash:
+            continue
+        cleaned.append("-")
+        previous_was_dash = True
+    return "".join(cleaned).strip("-")
 
 
 def get_groups() -> list:
@@ -616,6 +628,45 @@ def format_generated_timestamp(timezone_name: str) -> str:
     return datetime.now(ZoneInfo(timezone_name)).strftime("%d %B %Y %H:%M %Z")
 
 
+def report_date_stamp(timezone_name: str) -> str:
+    return datetime.now(ZoneInfo(timezone_name)).strftime("%Y-%m-%d")
+
+
+def default_weekly_report_paths(report_slug: str, timezone_name: str) -> dict:
+    date_stamp = report_date_stamp(timezone_name)
+    base_name = f"{report_slug}-weekly-report-{date_stamp}"
+    return {
+        "output": f"/tmp/{base_name}.md",
+        "tex_output": f"/tmp/{base_name}.tex",
+        "pdf_output": f"/tmp/{base_name}.pdf",
+    }
+
+
+def resolve_workspace_slug() -> str:
+    member = cmd_me(argparse.Namespace())
+    candidates = []
+
+    for key in ("workspace2", "organization2", "workspace", "organization"):
+        value = member.get(key)
+        if isinstance(value, dict):
+            candidates.extend([value.get("slug"), value.get("mention_name"), value.get("name")])
+
+    profile = member.get("profile")
+    if isinstance(profile, dict):
+        candidates.extend([profile.get("organization_name"), profile.get("organization")])
+
+    for candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        slug = slugify(candidate)
+        if slug:
+            return slug
+
+    raise RuntimeError(
+        "Could not derive a weekly report slug from the Shortcut workspace metadata; pass --report-slug explicitly."
+    )
+
+
 def monday_start(value: Optional[str], timezone_name: str) -> Optional[datetime]:
     timestamp = to_timezone(value, timezone_name)
     if timestamp is None:
@@ -862,7 +913,7 @@ def normalize_weekly_report_row(
         "title": story.get("name", "") or "-",
         "assignee": owner_label(story, members),
         "state": story.get("workflow_state_name", "") or workflow_states.get(story.get("workflow_state_id"), "-") or "-",
-        "type": story.get("story_type", "") or "-",
+        "type": (story.get("story_type", "") or "-").title() if story.get("story_type") else "-",
         "priority": priority_label(story, priority_field_ids),
         "ticket_id": f"#{story_id}" if story_id else "-",
         "url": story.get("app_url", "") or "",
@@ -974,6 +1025,7 @@ def render_weekly_report_tex(sections: list[dict], timezone_name: str) -> str:
         r"\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}",
         r"\usepackage{fontspec}",
         r"\setmainfont{Helvetica}",
+        r"\pagestyle{empty}",
         r"\definecolor{HeaderGray}{HTML}{EAEAEA}",
         r"\definecolor{RuleGray}{HTML}{CFCFCF}",
         r"\arrayrulecolor{RuleGray}",
@@ -1009,7 +1061,6 @@ def render_weekly_report_tex(sections: list[dict], timezone_name: str) -> str:
                 r"\toprule",
                 r"\endhead",
                 r"\midrule",
-                r"\multicolumn{8}{r}{\small\itshape Continued on next page} \\",
                 r"\endfoot",
                 r"\bottomrule",
                 r"\endlastfoot",
@@ -1639,6 +1690,8 @@ def cmd_refinement_list(args: argparse.Namespace) -> dict:
 
 
 def cmd_weekly_report(args: argparse.Namespace) -> dict:
+    report_slug = getattr(args, "report_slug", None) or resolve_workspace_slug()
+    default_paths = default_weekly_report_paths(report_slug, args.timezone)
     done_result = search_stories(f'state:"{args.done_state_name}"', args.done_limit)
     in_progress_result = search_stories(f'state:"{args.in_progress_state_name}"', args.in_progress_limit)
     in_review_result = search_stories(f'state:"{args.in_review_state_name}"', args.in_progress_limit)
@@ -1666,7 +1719,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
 
     sections = normalize_weekly_report_sections(done_stories, in_progress_stories, todo_stories, args.timezone)
     markdown = render_weekly_report_markdown(done_stories, in_progress_stories, todo_stories, args.timezone)
-    output_path = getattr(args, "output", None)
+    output_path = getattr(args, "output", None) or default_paths["output"]
     if output_path:
         output_dir = os.path.dirname(os.path.abspath(output_path))
         if output_dir and not os.path.exists(output_dir):
@@ -1674,7 +1727,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         with open(output_path, "w", encoding="utf-8") as handle:
             handle.write(markdown)
 
-    tex_output_path = getattr(args, "tex_output", None)
+    tex_output_path = getattr(args, "tex_output", None) or default_paths["tex_output"]
     if tex_output_path:
         tex_output_dir = os.path.dirname(os.path.abspath(tex_output_path))
         if tex_output_dir and not os.path.exists(tex_output_dir):
@@ -1682,7 +1735,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         with open(tex_output_path, "w", encoding="utf-8") as handle:
             handle.write(render_weekly_report_tex(sections, args.timezone))
 
-    pdf_output_path = getattr(args, "pdf_output", None)
+    pdf_output_path = getattr(args, "pdf_output", None) or default_paths["pdf_output"]
     if pdf_output_path:
         if not tex_output_path:
             raise RuntimeError("PDF export requires a TeX output path")
@@ -1730,6 +1783,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
 
     return {
         "generated_at": format_generated_timestamp(args.timezone),
+        "report_slug": report_slug,
         "timezone": args.timezone,
         "done_state_name": args.done_state_name,
         "in_progress_state_names": [args.in_progress_state_name, args.in_review_state_name],
@@ -2111,8 +2165,9 @@ def parser() -> argparse.ArgumentParser:
     weekly_report.add_argument("--in-progress-limit", type=int, default=50)
     weekly_report.add_argument("--todo-limit", type=int, default=25)
     weekly_report.add_argument("--timezone", default="Pacific/Auckland")
-    weekly_report.add_argument("--output", default=DEFAULT_WEEKLY_REPORT_PATH)
-    weekly_report.add_argument("--tex-output", default=DEFAULT_WEEKLY_REPORT_TEX_PATH)
+    weekly_report.add_argument("--report-slug")
+    weekly_report.add_argument("--output")
+    weekly_report.add_argument("--tex-output")
     weekly_report.add_argument("--pdf-output")
     weekly_report.add_argument("--json", action="store_true", help="Print report metadata as JSON")
     weekly_report.set_defaults(func=cmd_weekly_report)

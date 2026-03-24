@@ -548,6 +548,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "done_limit": {"type": "integer", "minimum": 1, "default": 100},
                 "todo_limit": {"type": "integer", "minimum": 1, "default": 25},
                 "timezone": {"type": "string", "default": "Pacific/Auckland"},
+                "report_slug": {"type": "string"},
                 "output": {"type": "string"},
                 "pdf_output": {"type": "string"}
             },
@@ -853,6 +854,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 done_limit=args.get("done_limit", 100),
                 todo_limit=args.get("todo_limit", 25),
                 timezone=args.get("timezone", "Pacific/Auckland"),
+                report_slug=args.get("report_slug"),
                 output=args.get("output"),
                 pdf_output=args.get("pdf_output"),
             )

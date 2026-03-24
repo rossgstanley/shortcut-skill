@@ -1,4 +1,6 @@
 .DS_Store
 .env
+AGENTS.md
 shortcut-task-manager/.env
 shortcut-skills-recipes/
+shortcut-task-manager/reports/

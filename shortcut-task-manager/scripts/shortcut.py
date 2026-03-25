@@ -198,6 +198,10 @@ def search_epics(query: str, limit: int) -> dict:
     return request("GET", "/search/epics", query={"query": query, "page_size": str(limit)})
 
 
+def search_objectives(query: str, limit: int) -> dict:
+    return request("GET", "/search/objectives", query={"query": query, "page_size": str(limit)})
+
+
 def parse_json_arg(raw: Optional[str], field_name: str):
     if raw is None:
         return None
@@ -384,6 +388,13 @@ def enrich_epic_records(epics: list[dict]) -> list[dict]:
     return epics
 
 
+def enrich_objective_records(objectives: list[dict]) -> list[dict]:
+    members = {member["id"]: member.get("profile", {}).get("name", member.get("name", "")) for member in get_members()}
+    for objective in objectives:
+        objective["owner_name"] = members.get(objective.get("owner_id"), objective.get("owner_id", ""))
+    return objectives
+
+
 def format_story_table(payload: dict) -> str:
     stories = payload.get("data", [])
     if not stories:
@@ -466,6 +477,41 @@ def format_epic_table(payload) -> str:
     for epic in epics:
         row = "  ".join(
             getter(epic).ljust(widths[index]) for index, (_, getter) in enumerate(columns)
+        )
+        lines.append(row)
+
+    return "\n".join(lines)
+
+
+def format_objective_table(payload) -> str:
+    objectives = payload.get("data", payload if isinstance(payload, list) else [])
+    if not objectives:
+        return "No objectives found."
+
+    columns = [
+        ("ID", lambda objective: str(objective.get("id", ""))),
+        ("Name", lambda objective: objective.get("name", "")),
+        ("State", lambda objective: objective.get("state", "")),
+        ("Owner", lambda objective: objective.get("owner_name", "")),
+        ("URL", lambda objective: objective.get("app_url", "")),
+    ]
+
+    widths = []
+    for header, getter in columns:
+        max_width = len(header)
+        for objective in objectives:
+            max_width = max(max_width, len(getter(objective)))
+        widths.append(max_width)
+
+    lines = []
+    header_row = "  ".join(header.ljust(widths[index]) for index, (header, _) in enumerate(columns))
+    divider = "  ".join("-" * widths[index] for index in range(len(columns)))
+    lines.append(header_row)
+    lines.append(divider)
+
+    for objective in objectives:
+        row = "  ".join(
+            getter(objective).ljust(widths[index]) for index, (_, getter) in enumerate(columns)
         )
         lines.append(row)
 
@@ -1225,6 +1271,54 @@ def cmd_list_epics(args: argparse.Namespace) -> dict:
     return epics
 
 
+def cmd_search_objectives(args: argparse.Namespace) -> dict:
+    result = search_objectives(args.query, args.limit)
+    return {
+        "data": enrich_objective_records(result.get("data", [])),
+        "next": result.get("next"),
+        "total": result.get("total"),
+    }
+
+
+def cmd_list_objectives(_: argparse.Namespace) -> dict:
+    return enrich_objective_records(request("GET", "/objectives"))
+
+
+def cmd_get_objective(args: argparse.Namespace) -> dict:
+    objective = request("GET", f"/objectives/{args.objective_id}")
+    return enrich_objective_records([objective])[0]
+
+
+def cmd_create_objective(args: argparse.Namespace) -> dict:
+    payload = {"name": args.name}
+    if args.description is not None:
+        payload["description"] = args.description
+    if args.state is not None:
+        payload["state"] = args.state
+    return request("POST", "/objectives", data=payload)
+
+
+def cmd_update_objective(args: argparse.Namespace) -> dict:
+    payload = {}
+    if args.name is not None:
+        payload["name"] = args.name
+    if args.description is not None:
+        payload["description"] = args.description
+    if args.state is not None:
+        payload["state"] = args.state
+    if not payload:
+        raise RuntimeError("No objective update fields provided")
+    return request("PUT", f"/objectives/{args.objective_id}", data=payload)
+
+
+def cmd_delete_objective(args: argparse.Namespace) -> dict:
+    return request("DELETE", f"/objectives/{args.objective_id}")
+
+
+def cmd_list_objective_epics(args: argparse.Namespace) -> dict:
+    return enrich_epic_records(request("GET", f"/objectives/{args.objective_id}/epics"))
+
+
 def cmd_create_epic(args: argparse.Namespace) -> dict:
     payload = {"name": args.name}
     if args.description is not None:
@@ -1239,6 +1333,8 @@ def cmd_create_epic(args: argparse.Namespace) -> dict:
         payload["owner_ids"] = args.owner_ids
     if args.label_ids:
         payload["label_ids"] = args.label_ids
+    if args.objective_ids is not None:
+        payload["objective_ids"] = args.objective_ids
     return request("POST", "/epics", data=payload)
 
 
@@ -1258,6 +1354,8 @@ def cmd_update_epic(args: argparse.Namespace) -> dict:
         payload["owner_ids"] = [cmd_me(argparse.Namespace())["id"]]
     elif args.owner_ids is not None:
         payload["owner_ids"] = args.owner_ids
+    if args.objective_ids is not None:
+        payload["objective_ids"] = args.objective_ids
     labels = parse_json_arg(args.labels, "labels")
     if labels is not None:
         payload["labels"] = labels
@@ -1410,6 +1508,7 @@ def cmd_update_story(args: argparse.Namespace) -> dict:
         "project_id": args.project_id,
         "estimate": args.estimate,
         "story_type": args.story_type,
+        "completed_at_override": args.completed_at_override,
     }
     for key, value in mutable_fields.items():
         if value is not None:
@@ -1468,6 +1567,7 @@ def cmd_validate_story_update(args: argparse.Namespace) -> dict:
         "project_id": args.project_id,
         "estimate": args.estimate,
         "story_type": args.story_type,
+        "completed_at_override": args.completed_at_override,
     }
     for key, value in mutable_fields.items():
         if value is not None:
@@ -1690,24 +1790,33 @@ def cmd_refinement_list(args: argparse.Namespace) -> dict:
 
 
 def cmd_weekly_report(args: argparse.Namespace) -> dict:
-    report_slug = getattr(args, "report_slug", None) or resolve_workspace_slug()
+    group_id = resolve_group_id(args.group_name) if getattr(args, "group_name", None) else None
+    report_slug = getattr(args, "report_slug", None) or (
+        slugify(args.group_name) if getattr(args, "group_name", None) else resolve_workspace_slug()
+    )
     default_paths = default_weekly_report_paths(report_slug, args.timezone)
     done_result = search_stories(f'state:"{args.done_state_name}"', args.done_limit)
     in_progress_result = search_stories(f'state:"{args.in_progress_state_name}"', args.in_progress_limit)
     in_review_result = search_stories(f'state:"{args.in_review_state_name}"', args.in_progress_limit)
     todo_result = search_stories(f'state:"{args.todo_state_name}"', args.todo_limit)
 
-    done_stories = [story for story in done_result.get("data", []) if story.get("completed_at")]
+    done_stories = [
+        story
+        for story in done_result.get("data", [])
+        if story.get("completed_at") and (group_id is None or story.get("group_id") == group_id)
+    ]
     in_progress_stories = []
     seen_in_progress_story_ids = set()
     for result in (in_progress_result, in_review_result):
         for story in result.get("data", []):
             story_id = story.get("id")
+            if group_id is not None and story.get("group_id") != group_id:
+                continue
             if story_id in seen_in_progress_story_ids:
                 continue
             seen_in_progress_story_ids.add(story_id)
             in_progress_stories.append(story)
-    todo_stories = list(todo_result.get("data", []))
+    todo_stories = [story for story in todo_result.get("data", []) if group_id is None or story.get("group_id") == group_id]
 
     done_stories.sort(
         key=lambda story: (
@@ -1785,6 +1894,7 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         "generated_at": format_generated_timestamp(args.timezone),
         "report_slug": report_slug,
         "timezone": args.timezone,
+        "group_name": getattr(args, "group_name", None),
         "done_state_name": args.done_state_name,
         "in_progress_state_names": [args.in_progress_state_name, args.in_review_state_name],
         "todo_state_name": args.todo_state_name,
@@ -1865,6 +1975,12 @@ def parser() -> argparse.ArgumentParser:
     search_epics_parser.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
     search_epics_parser.set_defaults(func=cmd_search_epics)
 
+    search_objectives_parser = sub.add_parser("search-objectives", help="Search objectives")
+    search_objectives_parser.add_argument("--query", required=True, help="Search query string")
+    search_objectives_parser.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
+    search_objectives_parser.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
+    search_objectives_parser.set_defaults(func=cmd_search_objectives)
+
     list_stories = sub.add_parser("list-stories", help="List stories")
     list_stories.add_argument("--limit", type=int, default=25, help="Max results (default: 25)")
     list_stories.add_argument("--project-id", type=int)
@@ -1919,6 +2035,36 @@ def parser() -> argparse.ArgumentParser:
     list_epics.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
     list_epics.set_defaults(func=cmd_list_epics)
 
+    list_objectives = sub.add_parser("list-objectives", help="List objectives")
+    list_objectives.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
+    list_objectives.set_defaults(func=cmd_list_objectives)
+
+    get_objective = sub.add_parser("get-objective", help="Fetch one objective")
+    get_objective.add_argument("--objective-id", type=int, required=True)
+    get_objective.set_defaults(func=cmd_get_objective)
+
+    create_objective = sub.add_parser("create-objective", help="Create an objective")
+    create_objective.add_argument("--name", required=True)
+    create_objective.add_argument("--description")
+    create_objective.add_argument("--state")
+    create_objective.set_defaults(func=cmd_create_objective)
+
+    update_objective = sub.add_parser("update-objective", help="Update an objective")
+    update_objective.add_argument("--objective-id", type=int, required=True)
+    update_objective.add_argument("--name")
+    update_objective.add_argument("--description")
+    update_objective.add_argument("--state")
+    update_objective.set_defaults(func=cmd_update_objective)
+
+    delete_objective = sub.add_parser("delete-objective", help="Delete an objective")
+    delete_objective.add_argument("--objective-id", type=int, required=True)
+    delete_objective.set_defaults(func=cmd_delete_objective)
+
+    list_objective_epics = sub.add_parser("list-objective-epics", help="List epics linked to an objective")
+    list_objective_epics.add_argument("--objective-id", type=int, required=True)
+    list_objective_epics.add_argument("--json", action="store_true", help="Print raw JSON instead of a table")
+    list_objective_epics.set_defaults(func=cmd_list_objective_epics)
+
     create_epic = sub.add_parser("create-epic", help="Create an epic")
     create_epic.add_argument("--name", required=True)
     create_epic.add_argument("--description")
@@ -1927,6 +2073,7 @@ def parser() -> argparse.ArgumentParser:
     create_epic.add_argument("--owner-self", action="store_true")
     create_epic.add_argument("--owner-ids", nargs="*")
     create_epic.add_argument("--label-ids", type=int, nargs="*")
+    create_epic.add_argument("--objective-ids", type=int, nargs="*")
     create_epic.set_defaults(func=cmd_create_epic)
 
     update_epic = sub.add_parser("update-epic", help="Update an epic")
@@ -1939,6 +2086,7 @@ def parser() -> argparse.ArgumentParser:
     update_epic.add_argument("--owner-self", action="store_true")
     update_epic.add_argument("--owner-ids", nargs="*")
     update_epic.add_argument("--labels", help="JSON array of label objects")
+    update_epic.add_argument("--objective-ids", type=int, nargs="*")
     update_epic.set_defaults(func=cmd_update_epic)
 
     update_epic_labels = sub.add_parser("update-epic-labels", help="Update epic labels")
@@ -2041,6 +2189,10 @@ def parser() -> argparse.ArgumentParser:
     update.add_argument("--group-name")
     update.add_argument("--estimate", type=int)
     update.add_argument("--story-type", choices=["feature", "bug", "chore"])
+    update.add_argument(
+        "--completed-at-override",
+        help="Manual override for the story completed date/time, e.g. 2025-08-31 or 2025-08-31T00:00:00Z",
+    )
     update.add_argument("--owner-self", action="store_true")
     update.add_argument("--owner-ids", nargs="*")
     update.add_argument("--owner-names", nargs="*")
@@ -2068,6 +2220,10 @@ def parser() -> argparse.ArgumentParser:
     validate_story_update.add_argument("--group-name")
     validate_story_update.add_argument("--estimate", type=int)
     validate_story_update.add_argument("--story-type", choices=["feature", "bug", "chore"])
+    validate_story_update.add_argument(
+        "--completed-at-override",
+        help="Manual override for the story completed date/time, e.g. 2025-08-31 or 2025-08-31T00:00:00Z",
+    )
     validate_story_update.add_argument("--owner-self", action="store_true")
     validate_story_update.add_argument("--owner-ids", nargs="*")
     validate_story_update.add_argument("--owner-names", nargs="*")
@@ -2164,6 +2320,7 @@ def parser() -> argparse.ArgumentParser:
     weekly_report.add_argument("--done-limit", type=int, default=100)
     weekly_report.add_argument("--in-progress-limit", type=int, default=50)
     weekly_report.add_argument("--todo-limit", type=int, default=25)
+    weekly_report.add_argument("--group-name")
     weekly_report.add_argument("--timezone", default="Pacific/Auckland")
     weekly_report.add_argument("--report-slug")
     weekly_report.add_argument("--output")
@@ -2202,8 +2359,12 @@ def main() -> int:
         print(result["markdown"])
         return 0
 
-    if args.command in {"list-epics", "search-epics"} and not args.json:
+    if args.command in {"list-epics", "search-epics", "list-objective-epics"} and not args.json:
         print(format_epic_table(result))
+        return 0
+
+    if args.command in {"list-objectives", "search-objectives"} and not args.json:
+        print(format_objective_table(result))
         return 0
 
     if args.command == "list-files" and not args.json:

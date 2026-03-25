@@ -45,6 +45,19 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "shortcut_search_objectives",
+        "description": "Search Shortcut objectives by free-text query.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "default": 10},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "shortcut_list_stories",
         "description": "List Shortcut stories, optionally filtered by workflow state.",
         "inputSchema": {
@@ -142,6 +155,70 @@ TOOLS: List[Dict[str, Any]] = [
                 "active": {"type": "boolean"},
                 "sort": {"type": "string", "enum": ["name", "stories", "points"]},
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_list_objectives",
+        "description": "List Shortcut objectives.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "shortcut_get_objective",
+        "description": "Fetch a single Shortcut objective by ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"objective_id": {"type": "integer"}},
+            "required": ["objective_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_create_objective",
+        "description": "Create a Shortcut objective.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "state": {"type": "string"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_update_objective",
+        "description": "Update a Shortcut objective.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "objective_id": {"type": "integer"},
+                "name": {"type": "string"},
+                "description": {"type": "string"},
+                "state": {"type": "string"},
+            },
+            "required": ["objective_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_delete_objective",
+        "description": "Delete a Shortcut objective.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"objective_id": {"type": "integer"}},
+            "required": ["objective_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "shortcut_list_objective_epics",
+        "description": "List Shortcut epics linked to a specific objective.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"objective_id": {"type": "integer"}},
+            "required": ["objective_id"],
             "additionalProperties": False,
         },
     },
@@ -317,6 +394,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "owner_self": {"type": "boolean"},
                 "owner_ids": {"type": "array", "items": {"type": "string"}},
                 "label_ids": {"type": "array", "items": {"type": "integer"}},
+                "objective_ids": {"type": "array", "items": {"type": "integer"}},
             },
             "required": ["name"],
             "additionalProperties": False,
@@ -336,6 +414,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "owner_self": {"type": "boolean"},
                 "owner_ids": {"type": "array", "items": {"type": "string"}},
                 "labels": {"type": "array", "items": {"type": "object"}},
+                "objective_ids": {"type": "array", "items": {"type": "integer"}},
             },
             "required": ["epic_id"],
             "additionalProperties": False,
@@ -547,6 +626,7 @@ TOOLS: List[Dict[str, Any]] = [
                 "todo_state_name": {"type": "string", "default": "To Do"},
                 "done_limit": {"type": "integer", "minimum": 1, "default": 100},
                 "todo_limit": {"type": "integer", "minimum": 1, "default": 25},
+                "group_name": {"type": "string"},
                 "timezone": {"type": "string", "default": "Pacific/Auckland"},
                 "report_slug": {"type": "string"},
                 "output": {"type": "string"},
@@ -571,6 +651,8 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return shortcut.cmd_search_stories(make_args(query=args["query"], limit=args.get("limit", 10)))
     if name == "shortcut_search_epics":
         return shortcut.cmd_search_epics(make_args(query=args["query"], limit=args.get("limit", 10)))
+    if name == "shortcut_search_objectives":
+        return shortcut.cmd_search_objectives(make_args(query=args["query"], limit=args.get("limit", 10)))
     if name == "shortcut_list_stories":
         return shortcut.cmd_list_stories(
             make_args(
@@ -618,6 +700,31 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return shortcut.cmd_list_workflows(make_args())
     if name == "shortcut_list_epics":
         return shortcut.cmd_list_epics(make_args(active=args.get("active", False), sort=args.get("sort")))
+    if name == "shortcut_list_objectives":
+        return shortcut.cmd_list_objectives(make_args())
+    if name == "shortcut_get_objective":
+        return shortcut.cmd_get_objective(make_args(objective_id=args["objective_id"]))
+    if name == "shortcut_create_objective":
+        return shortcut.cmd_create_objective(
+            make_args(
+                name=args["name"],
+                description=args.get("description"),
+                state=args.get("state"),
+            )
+        )
+    if name == "shortcut_update_objective":
+        return shortcut.cmd_update_objective(
+            make_args(
+                objective_id=args["objective_id"],
+                name=args.get("name"),
+                description=args.get("description"),
+                state=args.get("state"),
+            )
+        )
+    if name == "shortcut_delete_objective":
+        return shortcut.cmd_delete_objective(make_args(objective_id=args["objective_id"]))
+    if name == "shortcut_list_objective_epics":
+        return shortcut.cmd_list_objective_epics(make_args(objective_id=args["objective_id"]))
     if name == "shortcut_list_members":
         return shortcut.cmd_list_members(make_args())
     if name == "shortcut_list_labels":
@@ -702,6 +809,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
                 label_ids=args.get("label_ids"),
+                objective_ids=args.get("objective_ids"),
             )
         )
     if name == "shortcut_update_epic_labels":
@@ -722,6 +830,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 owner_self=args.get("owner_self", False),
                 owner_ids=args.get("owner_ids"),
                 labels=json.dumps(args["labels"]) if "labels" in args else None,
+                objective_ids=args.get("objective_ids"),
             )
         )
     if name == "shortcut_update_story":
@@ -853,6 +962,7 @@ def call_tool(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 todo_state_name=args.get("todo_state_name", "To Do"),
                 done_limit=args.get("done_limit", 100),
                 todo_limit=args.get("todo_limit", 25),
+                group_name=args.get("group_name"),
                 timezone=args.get("timezone", "Pacific/Auckland"),
                 report_slug=args.get("report_slug"),
                 output=args.get("output"),

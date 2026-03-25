@@ -15,6 +15,9 @@ Use this file as quick reference for common operations supported by `scripts/sho
 - `GET /stories/{story_id}`: Fetch a story.
 - `GET /projects`: List projects.
 - `GET /workflows`: List workflows and their state IDs.
+- `GET /objectives`: List objectives.
+- `GET /objectives/{objective_id}`: Fetch one objective.
+- `GET /objectives/{objective_id}/epics`: List epics linked to an objective.
 - `GET /members`: List members and IDs.
 - `GET /labels`: List labels and IDs.
 - `GET /files`: List uploaded files.
@@ -25,6 +28,9 @@ Use this file as quick reference for common operations supported by `scripts/sho
 - `POST /linked-files`: Create a linked external file.
 - `POST /stories`: Create a story.
 - `PUT /stories/{story_id}`: Update story fields.
+- `POST /objectives`: Create an objective.
+- `PUT /objectives/{objective_id}`: Update an objective.
+- `DELETE /objectives/{objective_id}`: Delete an objective.
 - `POST /stories/{story_id}/comments`: Add a comment.
 
 ## Common Story Fields
@@ -37,14 +43,18 @@ Use this file as quick reference for common operations supported by `scripts/sho
 - `label_ids`: Array of label IDs.
 - `estimate`: Story estimate.
 - `story_type`: `feature`, `bug`, or `chore`.
+- `completed_at_override`: Manual override for the story completion date/time.
+- `objective_ids`: Array of linked Shortcut objective IDs for epic create/update.
 
 ## Practical Usage Notes
 
 - Prefer targeted updates: send only fields that should change.
 - Resolve IDs first by querying projects/workflows through your existing Shortcut process or API exploration.
+- Treat objectives as typed entities: list/get/create/update/delete them directly instead of using generic raw requests.
 - This workspace/API version rejects `GET /stories`; use state-based search to enumerate stories.
 - When unsure of writable fields, fetch the story and mirror key names from existing payload structure.
 - For MCP integration, run `scripts/shortcut_mcp_server.py` and expose it as a stdio server in your client configuration.
 - `list-stories` prints a table by default; pass `--json` for raw payloads.
 - For enum custom fields, Shortcut expects `value_id`, not `value`.
+- Story completion backdating uses `completed_at_override`, not `completed_at`.
 - Uploaded files can be attached to a story with `story_id`; linked files are external URLs.

@@ -56,9 +56,13 @@ python3 scripts/shortcut.py me
 # Search and inspect
 python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10
 python3 scripts/shortcut.py search-epics --query "platform hardening" --limit 10
+python3 scripts/shortcut.py search-objectives --query "north star" --limit 10
 python3 scripts/shortcut.py list-stories --limit 25 --sort state
 python3 scripts/shortcut.py list-stories --epic-id 1234
 python3 scripts/shortcut.py list-epics --active --sort points
+python3 scripts/shortcut.py list-objectives
+python3 scripts/shortcut.py get-objective --objective-id 1234
+python3 scripts/shortcut.py list-objective-epics --objective-id 1234
 python3 scripts/shortcut.py list-files --story-id 1234
 python3 scripts/shortcut.py list-linked-files --story-id 1234
 python3 scripts/shortcut.py get-story --story-id 1234
@@ -69,7 +73,9 @@ python3 scripts/shortcut.py weekly-report --timezone Pacific/Auckland --output /
 # Use raw JSON for scripting
 python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10 --json
 python3 scripts/shortcut.py search-epics --query "platform hardening" --limit 10 --json
+python3 scripts/shortcut.py search-objectives --query "north star" --limit 10 --json
 python3 scripts/shortcut.py list-epics --json
+python3 scripts/shortcut.py list-objectives --json
 
 # Set a custom field by names, without looking up UUIDs
 python3 scripts/shortcut.py set-story-custom-field \
@@ -89,6 +95,11 @@ python3 scripts/shortcut.py update-story \
   --workflow-state-name "To Do" \
   --field-name "Priority" \
   --value-name "High"
+
+python3 scripts/shortcut.py update-story \
+  --story-id 1234 \
+  --workflow-state-name "Done" \
+  --completed-at-override "2025-08-31"
 
 # Preview a bulk update before applying it
 python3 scripts/shortcut.py bulk-update-stories \
@@ -153,8 +164,11 @@ python3 scripts/shortcut.py comment-story \
   --text "Shipped to staging; monitoring for 24h."
 
 # Epic operations
-python3 scripts/shortcut.py create-epic --name "Retry Hardening"
-python3 scripts/shortcut.py update-epic --epic-id 1234 --description "Tighten backoff and rate-limit handling."
+python3 scripts/shortcut.py create-objective --name "Improve Reliability" --state "in progress"
+python3 scripts/shortcut.py update-objective --objective-id 1234 --description "Reliability outcome for Q3."
+python3 scripts/shortcut.py delete-objective --objective-id 1234
+python3 scripts/shortcut.py create-epic --name "Retry Hardening" --objective-ids 1234
+python3 scripts/shortcut.py update-epic --epic-id 1234 --description "Tighten backoff and rate-limit handling." --objective-ids 1234
 python3 scripts/shortcut.py update-epic-labels --epic-id 1234 --labels '[{"name":"Platform"}]'
 ```
 

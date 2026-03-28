@@ -1993,6 +1993,7 @@ def parser() -> argparse.ArgumentParser:
 
     get_story = sub.add_parser("get-story", help="Fetch one story")
     get_story.add_argument("--story-id", type=int, required=True)
+    get_story.add_argument("--json", action="store_true", help="Print raw JSON")
     get_story.set_defaults(func=cmd_get_story)
 
     list_projects = sub.add_parser("list-projects", help="List all projects")

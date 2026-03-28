@@ -904,22 +904,22 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
         [
             *(
                 [
-                    "## To Do",
-                    "",
-                    render_weekly_report_table(todo_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
-                    "",
-                ]
-                if todo_stories
-                else []
-            ),
-            *(
-                [
                     "## In Progress",
                     "",
                     render_weekly_report_table(in_progress_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
                     "",
                 ]
                 if in_progress_stories
+                else []
+            ),
+            *(
+                [
+                    "## To Do",
+                    "",
+                    render_weekly_report_table(todo_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
+                    "",
+                ]
+                if todo_stories
                 else []
             ),
         ]
@@ -1011,19 +1011,6 @@ def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stori
             continue
         stories_by_week.setdefault(week_start, []).append(story)
 
-    if todo_stories:
-        sections.append(
-            {
-                "title": "To Do",
-                "rows": [
-                    normalize_weekly_report_row(
-                        story, epics, members, workflow_states, priority_field_ids, timezone_name
-                    )
-                    for story in todo_stories
-                ],
-            }
-        )
-
     if in_progress_stories:
         sections.append(
             {
@@ -1033,6 +1020,19 @@ def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stori
                         story, epics, members, workflow_states, priority_field_ids, timezone_name
                     )
                     for story in in_progress_stories
+                ],
+            }
+        )
+
+    if todo_stories:
+        sections.append(
+            {
+                "title": "To Do",
+                "rows": [
+                    normalize_weekly_report_row(
+                        story, epics, members, workflow_states, priority_field_ids, timezone_name
+                    )
+                    for story in todo_stories
                 ],
             }
         )

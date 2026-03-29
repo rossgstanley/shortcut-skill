@@ -721,6 +721,12 @@ def monday_start(value: Optional[str], timezone_name: str) -> Optional[datetime]
     return monday.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def current_monday_start(timezone_name: str) -> datetime:
+    now = datetime.now(ZoneInfo(timezone_name))
+    monday = now - timedelta(days=now.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def priority_label(story: dict, priority_field_ids: set[str]) -> str:
     field_values = story.get("custom_fields", [])
     for field in field_values:
@@ -873,7 +879,9 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
     ]
 
     stories_by_week: dict[datetime, list[dict]] = {}
-    resolved_sections = []
+    resolved_this_week_sections = []
+    resolved_previous_sections = []
+    current_week_start = current_monday_start(timezone_name)
     for story in done_stories:
         week_start = monday_start(story.get("completed_at"), timezone_name)
         if week_start is None:
@@ -889,9 +897,11 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
             ),
             reverse=True,
         )
-        resolved_sections.extend(
+        target_sections = resolved_this_week_sections if week_start == current_week_start else resolved_previous_sections
+        heading_prefix = "Resolved this week" if week_start == current_week_start else "Resolved"
+        target_sections.extend(
             [
-                f"## Resolved: Week Commencing {week_start.strftime('%-d %B %Y')}",
+                f"## {heading_prefix}: Week Commencing {week_start.strftime('%-d %B %Y')} ({len(stories)})",
                 "",
                 render_weekly_report_table(
                     stories, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field="completed_at"
@@ -914,6 +924,13 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
             ),
             *(
                 [
+                    *resolved_this_week_sections,
+                ]
+                if resolved_this_week_sections
+                else []
+            ),
+            *(
+                [
                     "## To Do",
                     "",
                     render_weekly_report_table(todo_stories, epics, members, workflow_states, priority_field_ids, timezone_name),
@@ -924,7 +941,7 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
             ),
         ]
     )
-    sections.extend(resolved_sections)
+    sections.extend(resolved_previous_sections)
     return "\n".join(sections)
 
 
@@ -1005,6 +1022,7 @@ def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stori
 
     sections = []
     stories_by_week: dict[datetime, list[dict]] = {}
+    current_week_start = current_monday_start(timezone_name)
     for story in done_stories:
         week_start = monday_start(story.get("completed_at"), timezone_name)
         if week_start is None:
@@ -1024,6 +1042,33 @@ def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stori
             }
         )
 
+    resolved_this_week_sections = []
+    resolved_previous_sections = []
+    for week_start in sorted(stories_by_week.keys(), reverse=True):
+        ordered_stories = sorted(
+            stories_by_week[week_start],
+            key=lambda story: (
+                to_timezone(story.get("completed_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+                to_timezone(story.get("updated_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
+            ),
+            reverse=True,
+        )
+        target_sections = resolved_this_week_sections if week_start == current_week_start else resolved_previous_sections
+        heading_prefix = "Resolved this week" if week_start == current_week_start else "Resolved"
+        target_sections.append(
+            {
+                "title": f"{heading_prefix}: Week Commencing {week_start.strftime('%-d %B %Y')}",
+                "rows": [
+                    normalize_weekly_report_row(
+                        story, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field="completed_at"
+                    )
+                    for story in ordered_stories
+                ],
+            }
+        )
+
+    sections.extend(resolved_this_week_sections)
+
     if todo_stories:
         sections.append(
             {
@@ -1037,26 +1082,7 @@ def normalize_weekly_report_sections(done_stories: list[dict], in_progress_stori
             }
         )
 
-    for week_start in sorted(stories_by_week.keys(), reverse=True):
-        ordered_stories = sorted(
-            stories_by_week[week_start],
-            key=lambda story: (
-                to_timezone(story.get("completed_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
-                to_timezone(story.get("updated_at"), timezone_name) or datetime.min.replace(tzinfo=ZoneInfo("UTC")),
-            ),
-            reverse=True,
-        )
-        sections.append(
-            {
-                "title": f"Resolved Week Commencing {week_start.strftime('%-d %B %Y')}",
-                "rows": [
-                    normalize_weekly_report_row(
-                        story, epics, members, workflow_states, priority_field_ids, timezone_name, updated_field="completed_at"
-                    )
-                    for story in ordered_stories
-                ],
-            }
-        )
+    sections.extend(resolved_previous_sections)
     return sections
 
 
@@ -1790,6 +1816,9 @@ def cmd_refinement_list(args: argparse.Namespace) -> dict:
 
 
 def cmd_weekly_report(args: argparse.Namespace) -> dict:
+    if args.done_weeks < 1:
+        raise RuntimeError("--done-weeks must be at least 1")
+
     group_id = resolve_group_id(args.group_name) if getattr(args, "group_name", None) else None
     report_slug = getattr(args, "report_slug", None) or (
         slugify(args.group_name) if getattr(args, "group_name", None) else resolve_workspace_slug()
@@ -1804,6 +1833,12 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         story
         for story in done_result.get("data", [])
         if story.get("completed_at") and (group_id is None or story.get("group_id") == group_id)
+    ]
+    done_cutoff = current_monday_start(args.timezone) - timedelta(weeks=args.done_weeks)
+    done_stories = [
+        story
+        for story in done_stories
+        if (monday_start(story.get("completed_at"), args.timezone) or datetime.min.replace(tzinfo=ZoneInfo("UTC"))) >= done_cutoff
     ]
     in_progress_stories = []
     seen_in_progress_story_ids = set()
@@ -2318,6 +2353,12 @@ def parser() -> argparse.ArgumentParser:
     weekly_report.add_argument("--in-progress-state-name", default="In Progress")
     weekly_report.add_argument("--in-review-state-name", default="In Review")
     weekly_report.add_argument("--todo-state-name", default="To Do")
+    weekly_report.add_argument(
+        "--done-weeks",
+        type=int,
+        default=2,
+        help="Number of resolved Done weeks to include after the current week; the current week is always included (default: 2)",
+    )
     weekly_report.add_argument("--done-limit", type=int, default=100)
     weekly_report.add_argument("--in-progress-limit", type=int, default=50)
     weekly_report.add_argument("--todo-limit", type=int, default=25)

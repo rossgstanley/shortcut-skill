@@ -69,6 +69,8 @@ python3 scripts/shortcut.py get-story --story-id 1234
 python3 scripts/shortcut.py download-file --file-public-id FILE_PUBLIC_ID --output ./attachment.png
 python3 scripts/shortcut.py weekly-report --timezone Pacific/Auckland
 python3 scripts/shortcut.py weekly-report --timezone Pacific/Auckland --output /tmp/acme-weekly-report.md --pdf-output /tmp/acme-weekly-report.pdf
+python3 scripts/shortcut.py progress-report --timezone Pacific/Auckland
+python3 scripts/shortcut.py progress-report --timezone Pacific/Auckland --pdf-output /tmp/acme-progress-report.pdf
 
 # Use raw JSON for scripting
 python3 scripts/shortcut.py search-stories --query "payment retry bug" --limit 10 --json
@@ -184,7 +186,10 @@ File note:
 Reporting note:
 - `weekly-report` generates a markdown report with Monday-based resolved-week groupings, assignees, and date-only table columns.
 - By default it derives the report slug from the Shortcut workspace metadata and writes to `/tmp/<workspace-slug>-weekly-report-YYYY-MM-DD.md`; override with `--output` or `--report-slug`.
+- `progress-report` generates a markdown/PDF report grouped by epic, with epic progress percentages in section headings and stories ordered by completion status and then priority.
+- By default it derives the report slug from the Shortcut workspace metadata and writes to `/tmp/<workspace-slug>-progress-report-YYYY-MM-DD.md`; override with `--output` or `--report-slug`.
 - Pass `--tex-output /path/to/report.tex` and `--pdf-output /path/to/report.pdf` to export a LaTeX `longtable` report and a XeLaTeX-rendered PDF.
+- `progress-report` uses `--story-limit` and now follows Shortcut story-search pagination when the requested count exceeds a single page.
 - For wide tabular exports, do not rely on Pandoc’s default Markdown table conversion.
 - Prefer normalized Shortcut data -> explicit LaTeX `longtable` -> `xelatex`.
 - Use A4 landscape when more than 6 columns are required.

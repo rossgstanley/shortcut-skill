@@ -5,8 +5,10 @@ import argparse
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
 import sys
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -191,7 +193,36 @@ def download_to_path(url: str, output_path: str) -> dict:
 
 
 def search_stories(query: str, limit: int) -> dict:
-    return request("GET", "/search/stories", query={"query": query, "page_size": str(limit)})
+    return search_stories_paginated(query, limit)
+
+
+def request_relative_url(method: str, relative_url: str) -> dict:
+    parsed = urllib.parse.urlparse(relative_url)
+    path = parsed.path
+    base_path = urllib.parse.urlparse(DEFAULT_BASE_URL).path
+    if base_path and path.startswith(base_path):
+        path = path[len(base_path):] or "/"
+    query = dict(urllib.parse.parse_qsl(parsed.query)) if parsed.query else None
+    return request(method, path, query=query)
+
+
+def search_stories_paginated(query: str, limit: int) -> dict:
+    page_size = max(1, min(limit, 250))
+    result = request("GET", "/search/stories", query={"query": query, "page_size": str(page_size)})
+    stories = list(result.get("data", []))
+    next_ref = result.get("next")
+
+    while next_ref and len(stories) < limit:
+        page = request_relative_url("GET", next_ref)
+        stories.extend(page.get("data", []))
+        next_ref = page.get("next")
+
+    return {
+        **result,
+        "data": stories[:limit],
+        "next": next_ref,
+        "total": result.get("total", len(stories)),
+    }
 
 
 def search_epics(query: str, limit: int) -> dict:
@@ -688,6 +719,26 @@ def default_weekly_report_paths(report_slug: str, timezone_name: str) -> dict:
     }
 
 
+def default_progress_report_paths(report_slug: str, timezone_name: str) -> dict:
+    date_stamp = report_date_stamp(timezone_name)
+    base_name = f"{report_slug}-progress-report-{date_stamp}"
+    return {
+        "output": f"/tmp/{base_name}.md",
+        "tex_output": f"/tmp/{base_name}.tex",
+        "pdf_output": f"/tmp/{base_name}.pdf",
+    }
+
+
+def resolve_xelatex_path() -> str:
+    resolved = shutil.which("xelatex")
+    if resolved:
+        return resolved
+    fallback = "/Library/TeX/texbin/xelatex"
+    if os.path.exists(fallback):
+        return fallback
+    raise RuntimeError("PDF export requires xelatex to be installed")
+
+
 def resolve_workspace_slug() -> str:
     member = cmd_me(argparse.Namespace())
     candidates = []
@@ -946,6 +997,17 @@ def render_weekly_report_markdown(done_stories: list[dict], in_progress_stories:
 
 
 def latex_escape(value: str) -> str:
+    value = str(value).replace("\r\n", "\n").replace("\r", "\n")
+    unicode_replacements = {
+        "\u00a0": " ",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+    }
     replacements = {
         "\\": r"\textbackslash{}",
         "&": r"\&",
@@ -955,10 +1017,21 @@ def latex_escape(value: str) -> str:
         "_": r"\_",
         "{": r"\{",
         "}": r"\}",
+        "[": r"{[}",
+        "]": r"{]}",
         "~": r"\textasciitilde{}",
         "^": r"\textasciicircum{}",
+        "\n": " ",
     }
-    return "".join(replacements.get(char, char) for char in value)
+    escaped: list[str] = []
+    for char in value:
+        if char in unicode_replacements:
+            char = unicode_replacements[char]
+        category = unicodedata.category(char)
+        if ord(char) > 0xFFFF or char == "\ufe0f" or category in {"Cs", "Co", "So"}:
+            continue
+        escaped.append(replacements.get(char, char))
+    return "".join(escaped)
 
 
 def normalize_weekly_report_row(
@@ -1158,6 +1231,322 @@ def render_weekly_report_tex(sections: list[dict], timezone_name: str) -> str:
                 + r" \\"
             )
         parts.extend([r"\end{longtable}", r"}"])
+
+    parts.append(r"\end{document}")
+    return "\n".join(parts)
+
+
+def load_report_context() -> tuple[dict[int, dict], dict[str, str], dict[int, str], set[str]]:
+    epics = {epic.get("id"): epic for epic in cmd_list_epics(argparse.Namespace(active=False, sort=None))}
+    members = {
+        member.get("id"): member.get("profile", {}).get("name", member.get("name", ""))
+        for member in cmd_list_members(argparse.Namespace())
+    }
+    workflow_states = {
+        state.get("id"): state.get("name", "")
+        for workflow in cmd_list_workflows(argparse.Namespace())
+        for state in workflow.get("states", [])
+    }
+    priority_field_ids = {
+        field.get("id")
+        for field in cmd_list_custom_fields(argparse.Namespace())
+        if normalize_name(field.get("name", "")) == "priority" and field.get("id")
+    }
+    return epics, members, workflow_states, priority_field_ids
+
+
+def epic_progress_label(epic: dict) -> str:
+    total = epic.get("stats", {}).get("num_stories_total", 0) or 0
+    done = epic.get("stats", {}).get("num_stories_done", 0) or 0
+    if total <= 0:
+        return "0%"
+    return f"{round((done / total) * 100):.0f}%"
+
+
+def objective_progress_label(epics: list[dict]) -> str:
+    total = sum((epic.get("stats", {}).get("num_stories_total", 0) or 0) for epic in epics)
+    done = sum((epic.get("stats", {}).get("num_stories_done", 0) or 0) for epic in epics)
+    if total <= 0:
+        return "0%"
+    return f"{round((done / total) * 100):.0f}%"
+
+
+def load_progress_report_context() -> tuple[dict[str, str], dict[int, str], dict[int, int], set[str]]:
+    members = {
+        member.get("id"): member.get("profile", {}).get("name", member.get("name", ""))
+        for member in cmd_list_members(argparse.Namespace())
+    }
+    workflow_states = {}
+    workflow_state_positions = {}
+    for workflow in cmd_list_workflows(argparse.Namespace()):
+        for state in workflow.get("states", []):
+            workflow_states[state.get("id")] = state.get("name", "")
+            workflow_state_positions[state.get("id")] = state.get("position", 9999)
+    priority_field_ids = {
+        field.get("id")
+        for field in cmd_list_custom_fields(argparse.Namespace())
+        if normalize_name(field.get("name", "")) == "priority" and field.get("id")
+    }
+    return members, workflow_states, workflow_state_positions, priority_field_ids
+
+
+def progress_report_sort_key(
+    story: dict,
+    workflow_state_positions: dict[int, int],
+    priority_field_ids: set[str],
+) -> tuple:
+    state_position = workflow_state_positions.get(story.get("workflow_state_id"), 9999)
+    return (
+        state_position,
+        -priority_sort_key(story, priority_field_ids),
+        story.get("name", "").lower(),
+    )
+
+
+def normalize_progress_report_row(
+    story: dict,
+    members: dict[str, str],
+    workflow_states: dict[int, str],
+    priority_field_ids: set[str],
+) -> dict:
+    story_id = story.get("id", "")
+    return {
+        "title": story.get("name", "") or "-",
+        "assignee": owner_label(story, members),
+        "state": story.get("workflow_state_name", "") or workflow_states.get(story.get("workflow_state_id"), "-") or "-",
+        "type": (story.get("story_type", "") or "-").title() if story.get("story_type") else "-",
+        "priority": priority_label(story, priority_field_ids),
+        "ticket_id": f"#{story_id}" if story_id else "-",
+        "url": story.get("app_url", "") or "",
+    }
+
+
+def render_progress_report_table(rows: list[dict]) -> str:
+    if not rows:
+        return '<p class="empty">No stories found.</p>'
+
+    table_rows = []
+    for row in rows:
+        ticket_cell = escape(row["ticket_id"])
+        if row["url"]:
+            ticket_cell = f'<a href="{escape(row["url"])}">{ticket_cell}</a>'
+        table_rows.append(
+            "<tr>"
+            f'<td class="wrap title">{escape(row["title"])}</td>'
+            f"<td>{escape(row['assignee'])}</td>"
+            f"<td>{escape(row['state'])}</td>"
+            f"<td>{escape(row['type'])}</td>"
+            f"<td>{escape(row['priority'])}</td>"
+            f"<td>{ticket_cell}</td>"
+            "</tr>"
+        )
+
+    return "\n".join(
+        [
+            '<table class="shortcut-progress-report-table">',
+            "<colgroup>",
+            '<col class="col-title" />',
+            '<col class="col-assignee" />',
+            '<col class="col-state" />',
+            '<col class="col-type" />',
+            '<col class="col-priority" />',
+            '<col class="col-ticket" />',
+            "</colgroup>",
+            "<thead>",
+            "<tr>",
+            "<th>Title</th>",
+            "<th>Assignee</th>",
+            "<th>State</th>",
+            "<th>Type</th>",
+            "<th>Priority</th>",
+            "<th>Ticket</th>",
+            "</tr>",
+            "</thead>",
+            "<tbody>",
+            *table_rows,
+            "</tbody>",
+            "</table>",
+        ]
+    )
+
+
+def normalize_progress_report_sections(
+    objectives: list[dict],
+    objective_epics: dict[int, list[dict]],
+    epic_stories: dict[int, list[dict]],
+) -> list[dict]:
+    members, workflow_states, workflow_state_positions, priority_field_ids = load_progress_report_context()
+    sections = []
+    seen_epic_ids = set()
+
+    for objective in objectives:
+        epics = objective_epics.get(objective["id"], [])
+        seen_epic_ids.update(epic["id"] for epic in epics)
+        sections.append(
+            {
+                "title": f'{objective.get("name", "Untitled Objective")} [{objective_progress_label(epics)}]',
+                "epics": [
+                    {
+                        "title": f'{epic.get("name", "Untitled Epic")} [{epic_progress_label(epic)}]',
+                        "rows": [
+                            normalize_progress_report_row(story, members, workflow_states, priority_field_ids)
+                            for story in sorted(
+                                epic_stories.get(epic["id"], []),
+                                key=lambda story: progress_report_sort_key(
+                                    story, workflow_state_positions, priority_field_ids
+                                ),
+                            )
+                        ],
+                    }
+                    for epic in epics
+                ],
+            }
+        )
+
+    remaining_epics = [epic for epic in objective_epics.get(0, []) if epic["id"] not in seen_epic_ids]
+    if remaining_epics:
+        sections.append(
+            {
+                "title": f'No Objective [{objective_progress_label(remaining_epics)}]',
+                "epics": [
+                    {
+                        "title": f'{epic.get("name", "Untitled Epic")} [{epic_progress_label(epic)}]',
+                        "rows": [
+                            normalize_progress_report_row(story, members, workflow_states, priority_field_ids)
+                            for story in sorted(
+                                epic_stories.get(epic["id"], []),
+                                key=lambda story: progress_report_sort_key(
+                                    story, workflow_state_positions, priority_field_ids
+                                ),
+                            )
+                        ],
+                    }
+                    for epic in remaining_epics
+                ],
+            }
+        )
+
+    return sections
+
+
+def render_progress_report_markdown(
+    objectives: list[dict],
+    objective_epics: dict[int, list[dict]],
+    epic_stories: dict[int, list[dict]],
+    timezone_name: str,
+) -> str:
+    sections = [
+        "# Shortcut Progress Report",
+        "",
+        "<style>",
+        ".shortcut-report-generated { font-size: 0.85em; color: #666; margin: 0 0 1rem; }",
+        ".shortcut-progress-report-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.92em; }",
+        ".shortcut-progress-report-table th, .shortcut-progress-report-table td { border: 1px solid #d7d7d7; padding: 0.45rem 0.5rem; vertical-align: top; }",
+        ".shortcut-progress-report-table th { background: #f6f6f6; text-align: left; }",
+        ".shortcut-progress-report-table td { white-space: nowrap; }",
+        ".shortcut-progress-report-table td.wrap, .shortcut-progress-report-table td.wrap * { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }",
+        ".shortcut-progress-report-table .col-title { width: 38%; }",
+        ".shortcut-progress-report-table .col-assignee { width: 13%; }",
+        ".shortcut-progress-report-table .col-state { width: 9%; }",
+        ".shortcut-progress-report-table .col-type { width: 7%; }",
+        ".shortcut-progress-report-table .col-priority { width: 9%; }",
+        ".shortcut-progress-report-table .col-ticket { width: 10%; }",
+        ".empty { color: #666; font-style: italic; }",
+        "</style>",
+        "",
+        f'<p class="shortcut-report-generated">Generated: {escape(format_generated_timestamp(timezone_name))} ({escape(timezone_name)})</p>',
+        "",
+    ]
+
+    for objective_section in normalize_progress_report_sections(objectives, objective_epics, epic_stories):
+        sections.extend([f"## {objective_section['title']}", ""])
+        for epic_section in objective_section["epics"]:
+            sections.extend(
+                [
+                    f"### {epic_section['title']}",
+                    "",
+                    render_progress_report_table(epic_section["rows"]),
+                    "",
+                ]
+            )
+
+    return "\n".join(sections)
+
+
+def render_progress_report_tex(sections: list[dict], timezone_name: str) -> str:
+    parts = [
+        r"\documentclass[10pt]{article}",
+        r"\usepackage[a4paper,landscape,margin=14mm]{geometry}",
+        r"\usepackage{longtable}",
+        r"\usepackage{booktabs}",
+        r"\usepackage{array}",
+        r"\usepackage[table]{xcolor}",
+        r"\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}",
+        r"\usepackage{fontspec}",
+        r"\setmainfont{Helvetica}",
+        r"\pagestyle{empty}",
+        r"\definecolor{HeaderGray}{HTML}{EAEAEA}",
+        r"\definecolor{RuleGray}{HTML}{CFCFCF}",
+        r"\arrayrulecolor{RuleGray}",
+        r"\renewcommand{\arraystretch}{1.2}",
+        r"\setlength{\tabcolsep}{3pt}",
+        r"\setlength{\LTpre}{0pt}",
+        r"\setlength{\LTpost}{0pt}",
+        r"\begin{document}",
+        r"\section*{Shortcut Progress Report}",
+        r"\vspace{-1.1em}",
+        rf"\noindent\small Generated: {latex_escape(format_generated_timestamp(timezone_name))} ({latex_escape(timezone_name)})\normalsize",
+        r"\vspace{0.15em}",
+    ]
+
+    for objective_section in sections:
+        parts.extend(["", rf"\subsection*{{{latex_escape(objective_section['title'])}}}"])
+        for epic_section in objective_section["epics"]:
+            rows = epic_section["rows"]
+            title = latex_escape(epic_section["title"])
+            parts.extend(
+                [
+                    "",
+                    rf"\subsubsection*{{{title}}}",
+                    r"\vspace{-0.45em}",
+                    r"\vspace{1.5mm}",
+                    r"{\small",
+                    r"\rowcolors{2}{white}{gray!3}",
+                    r"\begin{longtable}{@{}>{\raggedright\arraybackslash}p{0.49\linewidth}>{\raggedright\arraybackslash}p{0.11\linewidth}>{\raggedright\arraybackslash}p{0.09\linewidth}>{\raggedright\arraybackslash}p{0.07\linewidth}>{\raggedright\arraybackslash}p{0.09\linewidth}>{\raggedright\arraybackslash}p{0.07\linewidth}@{}}",
+                    r"\rowcolor{HeaderGray}",
+                    r"\textbf{Title} & \textbf{Assignee} & \textbf{State} & \textbf{Type} & \textbf{Priority} & \textbf{Ticket} \\",
+                    r"\toprule",
+                    r"\endfirsthead",
+                    r"\rowcolor{HeaderGray}",
+                    r"\textbf{Title} & \textbf{Assignee} & \textbf{State} & \textbf{Type} & \textbf{Priority} & \textbf{Ticket} \\",
+                    r"\toprule",
+                    r"\endhead",
+                    r"\midrule",
+                    r"\endfoot",
+                    r"\bottomrule",
+                    r"\endlastfoot",
+                ]
+            )
+            if not rows:
+                parts.append(r"\multicolumn{6}{@{}l@{}}{\textit{No stories found.}} \\")
+            for row in rows:
+                ticket_cell = latex_escape(row["ticket_id"])
+                if row["url"]:
+                    ticket_cell = rf"\href{{{latex_escape(row['url'])}}}{{\texttt{{{ticket_cell}}}}}"
+                parts.append(
+                    " & ".join(
+                        [
+                            latex_escape(row["title"]),
+                            latex_escape(row["assignee"]),
+                            latex_escape(row["state"]),
+                            latex_escape(row["type"]),
+                            latex_escape(row["priority"]),
+                            ticket_cell,
+                        ]
+                    )
+                    + r" \\"
+                )
+            parts.extend([r"\end{longtable}", r"}"])
 
     parts.append(r"\end{document}")
     return "\n".join(parts)
@@ -1887,9 +2276,10 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         if pdf_output_dir and not os.path.exists(pdf_output_dir):
             os.makedirs(pdf_output_dir, exist_ok=True)
         try:
+            xelatex_path = resolve_xelatex_path()
             subprocess.run(
                 [
-                    "xelatex",
+                    xelatex_path,
                     "-interaction=nonstopmode",
                     f"-output-directory={pdf_output_dir or '/tmp'}",
                     os.path.abspath(tex_output_path),
@@ -1936,6 +2326,139 @@ def cmd_weekly_report(args: argparse.Namespace) -> dict:
         "resolved_total": len(done_stories),
         "in_progress_total": len(in_progress_stories),
         "todo_total": len(todo_stories),
+        "markdown": markdown,
+        "output_path": os.path.abspath(output_path) if output_path else None,
+        "pdf_output_path": os.path.abspath(pdf_output_path) if pdf_output_path else None,
+        "pdf_text_preview": pdf_text_preview,
+    }
+
+
+def cmd_progress_report(args: argparse.Namespace) -> dict:
+    if args.story_limit < 1:
+        raise RuntimeError("--story-limit must be at least 1")
+
+    group_id = resolve_group_id(args.group_name) if getattr(args, "group_name", None) else None
+    report_slug = getattr(args, "report_slug", None) or (
+        slugify(args.group_name) if getattr(args, "group_name", None) else resolve_workspace_slug()
+    )
+    default_paths = default_progress_report_paths(report_slug, args.timezone)
+    epics = cmd_list_epics(argparse.Namespace(active=not args.include_archived_epics, sort=None))
+    if group_id is not None:
+        epics = [epic for epic in epics if epic.get("group_id") == group_id]
+    objectives = cmd_list_objectives(argparse.Namespace())
+    epic_stories: dict[int, list[dict]] = {}
+    all_stories = cmd_list_stories(
+        argparse.Namespace(
+            limit=args.story_limit,
+            project_id=None,
+            workflow_state_id=None,
+            epic_id=None,
+            active=False,
+            sort=None,
+        )
+    ).get("data", [])
+    if group_id is not None:
+        all_stories = [story for story in all_stories if story.get("group_id") == group_id]
+
+    stories_by_epic_id: dict[int, list[dict]] = {}
+    for story in all_stories:
+        epic_id = story.get("epic_id")
+        if epic_id is None:
+            continue
+        stories_by_epic_id.setdefault(epic_id, []).append(story)
+
+    total_stories = 0
+    for epic in epics:
+        stories = stories_by_epic_id.get(epic["id"], [])
+        epic_stories[epic["id"]] = stories
+        total_stories += len(stories)
+
+    objective_epics: dict[int, list[dict]] = {}
+    assigned_epic_ids = set()
+    for objective in objectives:
+        linked_epics = cmd_list_objective_epics(argparse.Namespace(objective_id=objective["id"]))
+        if group_id is not None:
+            linked_epics = [epic for epic in linked_epics if epic.get("group_id") == group_id]
+        if not args.include_archived_epics:
+            linked_epics = [epic for epic in linked_epics if not epic.get("archived")]
+        objective_epics[objective["id"]] = linked_epics
+        assigned_epic_ids.update(epic["id"] for epic in linked_epics)
+
+    objective_epics[0] = [epic for epic in epics if epic["id"] not in assigned_epic_ids]
+
+    sections = normalize_progress_report_sections(objectives, objective_epics, epic_stories)
+    markdown = render_progress_report_markdown(objectives, objective_epics, epic_stories, args.timezone)
+    output_path = getattr(args, "output", None) or default_paths["output"]
+    if output_path:
+        output_dir = os.path.dirname(os.path.abspath(output_path))
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as handle:
+            handle.write(markdown)
+
+    tex_output_path = getattr(args, "tex_output", None) or default_paths["tex_output"]
+    if tex_output_path:
+        tex_output_dir = os.path.dirname(os.path.abspath(tex_output_path))
+        if tex_output_dir and not os.path.exists(tex_output_dir):
+            os.makedirs(tex_output_dir, exist_ok=True)
+        with open(tex_output_path, "w", encoding="utf-8") as handle:
+            handle.write(render_progress_report_tex(sections, args.timezone))
+
+    pdf_output_path = getattr(args, "pdf_output", None) or default_paths["pdf_output"]
+    if pdf_output_path:
+        if not tex_output_path:
+            raise RuntimeError("PDF export requires a TeX output path")
+        pdf_output_dir = os.path.dirname(os.path.abspath(pdf_output_path))
+        if pdf_output_dir and not os.path.exists(pdf_output_dir):
+            os.makedirs(pdf_output_dir, exist_ok=True)
+        try:
+            xelatex_path = resolve_xelatex_path()
+            subprocess.run(
+                [
+                    xelatex_path,
+                    "-interaction=nonstopmode",
+                    f"-output-directory={pdf_output_dir or '/tmp'}",
+                    os.path.abspath(tex_output_path),
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            generated_pdf = os.path.join(
+                pdf_output_dir or "/tmp",
+                os.path.splitext(os.path.basename(tex_output_path))[0] + ".pdf",
+            )
+            if os.path.abspath(generated_pdf) != os.path.abspath(pdf_output_path):
+                os.replace(generated_pdf, os.path.abspath(pdf_output_path))
+        except FileNotFoundError as err:
+            raise RuntimeError("PDF export requires xelatex to be installed") from err
+        except subprocess.CalledProcessError as err:
+            detail = err.stderr.strip() or err.stdout.strip() or "unknown xelatex error"
+            raise RuntimeError(f"PDF export failed: {detail}") from err
+
+    pdf_text_preview = None
+    if pdf_output_path:
+        try:
+            preview = subprocess.run(
+                ["pdftotext", os.path.abspath(pdf_output_path), "-"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            pdf_text_preview = "\n".join(preview.stdout.splitlines()[:80])
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pdf_text_preview = None
+
+    return {
+        "generated_at": format_generated_timestamp(args.timezone),
+        "report_slug": report_slug,
+        "timezone": args.timezone,
+        "group_name": getattr(args, "group_name", None),
+        "objective_total": len(objectives),
+        "epic_total": len(epics),
+        "story_total": total_stories,
         "markdown": markdown,
         "output_path": os.path.abspath(output_path) if output_path else None,
         "pdf_output_path": os.path.abspath(pdf_output_path) if pdf_output_path else None,
@@ -2371,6 +2894,18 @@ def parser() -> argparse.ArgumentParser:
     weekly_report.add_argument("--json", action="store_true", help="Print report metadata as JSON")
     weekly_report.set_defaults(func=cmd_weekly_report)
 
+    progress_report = sub.add_parser("progress-report", help="Generate a Shortcut progress markdown/PDF report grouped by epic")
+    progress_report.add_argument("--group-name")
+    progress_report.add_argument("--include-archived-epics", action="store_true")
+    progress_report.add_argument("--story-limit", type=int, default=1000)
+    progress_report.add_argument("--timezone", default="Pacific/Auckland")
+    progress_report.add_argument("--report-slug")
+    progress_report.add_argument("--output")
+    progress_report.add_argument("--tex-output")
+    progress_report.add_argument("--pdf-output")
+    progress_report.add_argument("--json", action="store_true", help="Print report metadata as JSON")
+    progress_report.set_defaults(func=cmd_progress_report)
+
     return p
 
 
@@ -2398,6 +2933,10 @@ def main() -> int:
         return 0
 
     if args.command == "weekly-report" and not args.json:
+        print(result["markdown"])
+        return 0
+
+    if args.command == "progress-report" and not args.json:
         print(result["markdown"])
         return 0
 
